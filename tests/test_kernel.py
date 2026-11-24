@@ -11,7 +11,7 @@ from twbacktest.data import load_market
 from twbacktest.fills import FILLS
 from twbacktest.grid import IndicatorCache, expand
 from twbacktest.indicators import Indicator
-from twbacktest.kernel import run_accounts
+from twbacktest.kernel import run_accounts, run_accounts_with_fills
 from twbacktest.registry import Registry
 from twbacktest.signals import Signals, build_signals
 from twbacktest.tiers import RESETS
@@ -286,6 +286,126 @@ class WindowChecks(unittest.TestCase):
             bad = Signals(**{**sig.__dict__, name: arr})
             with self.assertRaises(ValueError, msg=name):
                 run_accounts(bad, market([1.0] * 3), np.array([0]), np.array([1]), np.array([0, 1]))
+
+
+# 買賣費率與稅都不同，費率套錯邊會被抓到
+UNEVEN = Costs(0.0004, 0.0006, 0.0015)
+
+
+def busy_case():
+    """2 策略 × 40 天 × 3 檔：檔 0 買 0.5、檔 1 賣 0.2、檔 2 買 0.3；隨機觸發與重新待命，同日可多筆。"""
+    rng = np.random.default_rng(7)
+    S, D, K = 2, 40, 3
+    mk = market(100 * np.exp(np.cumsum(rng.normal(0, 0.03, D))), start="2024-01-02")
+    mk.dates = np.array(
+        [np.datetime64("2024-01-02") + np.timedelta64(int(x), "D") for x in np.cumsum(rng.choice([1, 1, 1, 3], D))], dtype="datetime64[D]"
+    )
+    hit = rng.random((S, D, K)) < 0.5
+    price = mk.close[None, :, None] * (1 + rng.normal(0, 0.02, (S, D, K)))
+    order = np.full((S, D, K), -1, dtype=np.int8)
+    for s in range(S):
+        for d in range(D):
+            ks = [k for k in rng.permutation(K) if hit[s, d, k]]
+            order[s, d, : len(ks)] = ks
+    sig = Signals(
+        hit=hit, price=price, rearm=rng.random((S, D, K)) < 0.4, order=order,
+        target=np.array([[0.5, 0.2, 0.3]] * S), side=np.array([[1, -1, 1]] * S, dtype=np.int8),
+        both_sides=[[]] * S,
+    )
+    # 三個起跑日共用，各自終點不同
+    starts = np.array([0, 5, 12])
+    ends = np.array([10, 20, 39, 15, 39, 30, 38])
+    ptr = np.array([0, 3, 5, 7])
+    return sig, mk, starts, ends, ptr
+
+
+class FillsKernelSameAsScoring(unittest.TestCase):
+    def test_accounts_identical_to_scoring_kernel_and_case_is_not_trivial(self):
+        sig, mk, starts, ends, ptr = busy_case()
+        for kw in ({}, {"unit": 100.0, "costs": UNEVEN}):
+            a = run_accounts(sig, mk, starts, ends, ptr, **kw)
+            b, fills = run_accounts_with_fills(sig, mk, starts, ends, ptr, **kw)
+            for name in ("nav", "max_drawdown", "lowest", "first_buy"):
+                np.testing.assert_array_equal(getattr(a, name), getattr(b, name), err_msg=f"{name} {kw}")
+            # 輸入要真的有買、有賣、重新待命後同檔再成交、同日多筆
+            self.assertTrue((fills.qty > 0).any() and (fills.qty < 0).any())
+            again = same_day = False
+            for s in range(2):
+                for j in range(3):
+                    lo, hi = fills.offset[s * 3 + j], fills.offset[s * 3 + j + 1]
+                    if hi - lo > len(set(fills.tier[lo:hi])):  # 同一檔位成交不只一次 = 重新待命生效
+                        again = True
+                    if len(set(fills.day[lo:hi])) < hi - lo:
+                        same_day = True
+            self.assertTrue(again and same_day)
+
+
+class FillsLedger(unittest.TestCase):
+    def test_hand_computed_buy_then_sell(self):
+        # 同 SellFill：第 0 天買 40000 @100，第 2 天賣 30336 @120；日期 週五、週一、週二
+        hit = [[True, False], [False, False], [False, True]]
+        price = [[100.0, np.nan], [np.nan, np.nan], [np.nan, 120.0]]
+        order = [[0, -1], [-1, -1], [1, -1]]
+        sig = make_signals(hit, price, order, [0.8, 0.2], [1, -1])
+        _, f = run_accounts_with_fills(sig, MARKET, np.array([0]), np.array([2]), np.array([0, 1]))
+        self.assertEqual(f.offset.tolist(), [0, 2])
+        self.assertEqual(f.day.tolist(), [0, 2])
+        self.assertEqual(f.tier.tolist(), [0, 1])
+        self.assertEqual(f.qty.tolist(), [40_000.0, -30_336.0])
+        self.assertEqual(f.price.tolist(), [100.0, 120.0])
+        self.assertAlmostEqual(f.fee[0], 40_000 * 100 * BF, places=6)
+        self.assertAlmostEqual(f.fee[1], 30_336 * 120 * BF, places=6)
+        self.assertEqual(f.tax.tolist()[0], 0.0)
+        self.assertAlmostEqual(f.tax[1], 30_336 * 120 * 0.001, places=6)
+        cash0 = 5_000_000 - 40_000 * 100 * (1 + BF)
+        cash2 = cash0 * R ** (3 / 365) * R ** (1 / 365)
+        self.assertEqual(f.cash_before[0], 5_000_000)
+        self.assertAlmostEqual(f.cash_after[0], cash0, places=6)
+        self.assertAlmostEqual(f.cash_before[1], cash2, places=6)
+        self.assertAlmostEqual(f.cash_after[1], cash2 + 30_336 * 120 * (1 - BF - 0.001), places=6)
+        self.assertEqual(f.units_after.tolist(), [40_000.0, 9_664.0])
+
+    def test_ledger_reconciles_with_cash_and_nav(self):
+        sig, mk, starts, ends, ptr = busy_case()
+        acc, f = run_accounts_with_fills(sig, mk, starts, ends, ptr, costs=UNEVEN)
+        c = UNEVEN
+        cash0 = Account().cash
+        rate = Account().cash_rate
+        dates = mk.dates.astype("datetime64[D]")
+
+        def g(d):  # 第 d 天相對前一天的計息因子，自己用曆日數算
+            return (1 + rate) ** (int((dates[d] - dates[d - 1]) / np.timedelta64(1, "D")) / 365)
+
+        def grow(cash, d0, d1):  # 從第 d0 天（不含）到第 d1 天（含）逐日計息
+            for d in range(d0 + 1, d1 + 1):
+                cash *= g(d)
+            return cash
+
+        checked = 0
+        for s in range(2):
+            for j, st in enumerate(starts):
+                lo, hi = f.offset[s * 3 + j], f.offset[s * 3 + j + 1]
+                cash, day = cash0, st  # 上一筆之後的現金與日期
+                for i in range(lo, hi):
+                    q, p = f.qty[i], f.price[i]
+                    self.assertAlmostEqual(f.cash_before[i], grow(cash, day, f.day[i]), delta=1e-6)
+                    self.assertAlmostEqual(f.fee[i], abs(q) * p * (c.buy_fee if q > 0 else c.sell_fee), delta=1e-9)
+                    self.assertAlmostEqual(f.tax[i], 0.0 if q > 0 else abs(q) * p * c.sell_tax, delta=1e-9)
+                    self.assertAlmostEqual(
+                        f.cash_after[i], f.cash_before[i] - q * p - f.fee[i] - f.tax[i], delta=1e-6
+                    )
+                    cash, day = f.cash_after[i], f.day[i]
+                    checked += 1
+                self.assertTrue((np.diff(f.day[lo:hi]) >= 0).all())
+                # 每個窗口終點：最後一筆之後計息到終點 + 持股 × 收盤 = nav
+                for e in range(ptr[j], ptr[j + 1]):
+                    ed = ends[e]
+                    done = [i for i in range(lo, hi) if f.day[i] <= ed]
+                    cash, day, units = (cash0, st, 0.0) if not done else (f.cash_after[done[-1]], f.day[done[-1]], f.units_after[done[-1]])
+                    nav = grow(cash, day, ed) + units * mk.close[ed]
+                    self.assertAlmostEqual(acc.nav[s, e], nav, delta=1e-6)
+        self.assertGreater(checked, 30)
+
 
 
 if __name__ == "__main__":
