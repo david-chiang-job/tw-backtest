@@ -200,7 +200,7 @@ all = [
   { indicator = "drawdown", at_most = -0.30 },
   { any = [
     { indicator = "ma_deviation", days = 100, at_most = -0.05 },
-    { indicator = "ma_deviation", days = 30, at_most = -0.10 },
+    { indicator = "ma_deviation", days = 30, at_most = -0.12 },
   ] },
 ]
 ```
@@ -253,8 +253,8 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 - `total_return`：期末淨值 ÷ 本金 − 1。
 - `annualized`：年化報酬，以 365.2425 天為一年。
 - `excess_total`、`excess_annual`：跟同窗全倉基準的差，單位是百分點。
-- `max_drawdown`：最大回落。
-- `principal_loss`：本金最大虧損比例，沒虧到本金是 0。
+- `max_drawdown`：起跑日到終點之間，收盤淨值從前高跌下來的最大比例（0 到 1），前高從本金起算。
+- `principal_loss`：期間最低收盤淨值比本金少幾成，即 max(0, (本金 − 最低淨值) ÷ 本金)。
 - `wait_days`：起跑日到首次買入的曆日數，沒買入是 NaN。
 
 `windows.csv`：只含分數前 `keep_windows` 名的策略（`strategy` 欄是策略編號）與 `baseline`，每個窗口一列。
@@ -307,6 +307,7 @@ at_most = -0.05
 ```
 
 別忘了在 `tests/` 補測試。
+命令列只認套件內登記的指標，不會載入外部模組，所以新指標要加在這個 repo 裡（fork 或改 clone 下來的版本再安裝）。
 條件組合、成交模型、重置規則、窗口產生器、評分也是同一套登記表（`registry.py`），各自在對應模組用 decorator 登記名稱。
 
 ## 開發

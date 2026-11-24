@@ -41,7 +41,7 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 # 買進檔位：加權條件，各條件觸發價由高到低累加分數，累積到門檻才觸發。
 # 距高點跌 25% 給 2 分，200 日乖離與 60 日乖離（-7%）各給 1 分，門檻 3 分：
 # 距高點加上任一條乖離就會觸發，只有兩條乖離湊不到。
-# 200 日乖離門檻寫成範圍（-15%、-10%、-5%），會展開成 3 組策略。
+# 200 日乖離門檻寫成範圍（-6%、-12%、-18%），會展開成 3 組策略。
 # reset = "new_high"：有成交後，等收盤不低於前一天為止的最高收盤，隔天起才再待命。
 [[tiers]]
 name = "買進"
@@ -52,7 +52,7 @@ reset = "new_high"
 score_at_least = 3
 weighted = [
   { indicator = "drawdown", at_most = -0.25, points = 2 },
-  { indicator = "ma_deviation", days = 200, at_most = { from = -0.15, to = -0.05, step = 0.05 }, points = 1 },
+  { indicator = "ma_deviation", days = 200, at_most = { from = -0.06, to = -0.18, step = -0.06 }, points = 1 },
   { indicator = "ma_deviation", days = 60, at_most = -0.07, points = 1 },
 ]
 
