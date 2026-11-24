@@ -2,7 +2,7 @@ import copy
 import tomllib
 import unittest
 
-from twbacktest.config import ConfigError, parse_config
+from twbacktest.config import Account, ConfigError, Costs, parse_config, shared_account
 
 GOOD = """
 [[tiers]]
@@ -134,6 +134,59 @@ class ConfigChecks(unittest.TestCase):
         d = good()
         weighted(d)["any"] = [copy.deepcopy(weighted(d)["weighted"][0])]
         self.assert_rejected(d, "補倉")
+
+
+class AccountAndCosts(unittest.TestCase):
+    def parse(self, **extra):
+        d = good()
+        d.update(extra)
+        return parse_config(d)
+
+    def test_defaults_and_given_values(self):
+        c = self.parse()
+        self.assertEqual(c.account, Account())
+        self.assertEqual(c.costs, Costs())
+        self.assertNotIn("account", c.extra)
+        self.assertIn("other", c.extra)  # 對照：別的區段仍原樣留在 extra
+        c = self.parse(account={"cash": 1_000_000, "cash_rate": 0.02}, costs={"sell_tax": 0.003})
+        self.assertEqual((c.account.cash, c.account.cash_rate), (1_000_000, 0.02))
+        self.assertEqual((c.costs.sell_tax, c.costs.buy_fee), (0.003, Costs().buy_fee))
+        self.assertNotIn("costs", c.extra)
+
+    def test_bad_values_rejected_with_section_prefix(self):
+        bad = [
+            ("account", 5),
+            ("account", {"cash": 0}),
+            ("account", {"cash": -1}),
+            ("account", {"cash_rate": -1}),
+            ("account", {"cash": "1000"}),
+            ("account", {"cash": True}),
+            ("account", {"principal": 1}),
+            ("costs", {"buy_fee": 1}),
+            ("costs", {"sell_fee": -0.1}),
+            ("costs", {"sell_tax": 1.5}),
+            ("costs", {"sell_tax": False}),
+            ("costs", {"tax": 0.1}),
+            ("costs", []),
+        ]
+        for section, value in bad:
+            with self.assertRaises(ConfigError, msg=(section, value)) as cm:
+                self.parse(**{section: value})
+            self.assertTrue(str(cm.exception).startswith(f"[{section}]："), str(cm.exception))
+        # 對照：邊界值放行
+        self.parse(account={"cash": 1, "cash_rate": -0.5}, costs={"buy_fee": 0, "sell_tax": 0.999})
+
+    def test_shared_account_same_passes_different_rejected(self):
+        a = self.parse(account={"cash": 2_000_000})
+        b = self.parse(account={"cash": 2_000_000})
+        self.assertEqual(shared_account([a, b]), (a.account, a.costs))
+        for other in (
+            self.parse(account={"cash": 3_000_000}),
+            self.parse(account={"cash": 2_000_000, "cash_rate": 0.02}),
+            self.parse(account={"cash": 2_000_000}, costs={"sell_tax": 0.002}),
+        ):
+            with self.assertRaises(ConfigError):
+                shared_account([a, other])
 
 
 if __name__ == "__main__":
