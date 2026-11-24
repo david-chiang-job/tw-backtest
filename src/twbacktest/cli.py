@@ -104,8 +104,8 @@ def score_file(path, by=RANK_BY):
 def _market(data, base):
     d = data.get("data", {})
     folder = os.path.join(base, d.get("dir", "."))
-    return load_market(os.path.join(folder, d.get("price_file", synthetic.PRICE_FILE)),
-                       os.path.join(folder, d.get("total_return_file", synthetic.TOTAL_RETURN_FILE)))
+    return load_market(os.path.join(folder, d.get("price_index", synthetic.PRICE_FILE)),
+                       os.path.join(folder, d.get("total_return", synthetic.TOTAL_RETURN_FILE)))
 
 
 def cmd_run(a):
