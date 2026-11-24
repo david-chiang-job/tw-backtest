@@ -37,5 +37,18 @@ class RegistryChecks(unittest.TestCase):
             r.register("a")(2)
 
 
+
+
+class Drawdown(unittest.TestCase):
+    def test_peak_excludes_today_and_day_zero_is_nan(self):
+        close = np.array([10.0, 30.0, 20.0, 25.0, 40.0])
+        trig = INDICATORS.get("drawdown").trigger(close, -0.1)
+        self.assertTrue(np.isnan(trig[0]))
+        # 第 1 天最高 10；第 2 天最高 30；第 4 天最高仍是 30（40 是當天，不含）
+        self.assertAlmostEqual(trig[1], 10.0 * 0.9)
+        self.assertAlmostEqual(trig[2], 30.0 * 0.9)
+        self.assertAlmostEqual(trig[4], 30.0 * 0.9)
+
+
 if __name__ == "__main__":
     unittest.main()
