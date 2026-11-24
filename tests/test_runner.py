@@ -51,6 +51,34 @@ class ChunkInvariant(unittest.TestCase):
                     for f in fields(getattr(whole, obj)):
                         self.assertTrue(same(getattr(getattr(r, obj), f.name), getattr(getattr(whole, obj), f.name)), f"{obj}.{f.name}")
 
+    def test_top_n_independent_of_chunk_size(self):
+        whole = self.whole
+        s = whole.summary["720d.excess_total.median"][whole.ranking]
+        # 夾具要真的有同分：找一個 N，讓前 N 名的切線落在同分組中間
+        ties = [p for p in range(self.n - 1) if s[p] == s[p + 1]]
+        self.assertTrue(ties, "夾具沒有同分，測不到同分照索引小的先")
+        top_n = ties[0] + 1
+        expect = whole.ranking[:top_n]
+        ref = run_strategies(self.strategies, self.market, self.n, keep=expect, threads=1)  # 另一條路取同批策略的逐窗結果
+        for size in (1, 5, self.n, None):
+            with self.subTest(chunk_size=size):
+                r = run_strategies(self.strategies, self.market, size, keep_top=top_n, threads=1)
+                self.assertEqual(list(r.top), list(expect))
+                for obj, base in (("top_metrics", "kept_metrics"), ("top_accounts", "kept_accounts")):
+                    for f in fields(getattr(r, obj)):
+                        self.assertTrue(same(getattr(getattr(r, obj), f.name), getattr(getattr(ref, base), f.name)), f"{obj}.{f.name}")
+        # 對照：同分的兩組策略逐窗結果確實是同一份數值但不是同一個索引（切線真的切在同分中間）
+        self.assertEqual(s[top_n - 1], s[top_n])
+        self.assertLess(whole.ranking[top_n - 1], whole.ranking[top_n])
+
+    def test_auto_chunk_size_follows_budget(self):
+        small = run_strategies(self.strategies, self.market, None, threads=1, memory_budget=1)
+        self.assertEqual(small.chunk_size, 1)  # 預算再小也至少 1 組
+        big = run_strategies(self.strategies, self.market, None, threads=1)
+        self.assertGreaterEqual(big.chunk_size, small.chunk_size)
+        for k in self.whole.summary:
+            self.assertTrue(same(small.summary[k], self.whole.summary[k]), k)
+
     def test_kept_rows_match_requested_strategy(self):
         # 對照：另存的列就是該策略自己跑的結果（單獨跑一組，不經過分塊邏輯）
         for pos, idx in enumerate(self.keep):
