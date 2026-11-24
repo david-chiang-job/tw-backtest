@@ -33,7 +33,7 @@ def cash_growth(dates, rate):
     return g
 
 
-@njit(parallel=True)
+@njit(parallel=True, cache=True)
 def _kernel(hit, price, rearm, order, target, side, close, growth, starts, ends, ptr,
             cash0, unit, bf, sf, tax, nav_out, mdd_out, low_out, first_out):
     S, _, K = hit.shape

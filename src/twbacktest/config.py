@@ -66,6 +66,12 @@ def _default_window_spec():
 
 
 @dataclass(frozen=True)
+class RunSpec:
+    threads: object = "auto"  # "auto" 或正整數
+    keep_windows: int = 10  # 只為分數前 N 名另存逐窗結果
+
+
+@dataclass(frozen=True)
 class Config:
     tiers: list
     fill: Fill = field(default_factory=Fill)
@@ -73,6 +79,7 @@ class Config:
     costs: Costs = field(default_factory=Costs)
     extra: dict = field(default_factory=dict)
     windows: WindowSpec = field(default_factory=WindowSpec)
+    run: RunSpec = field(default_factory=RunSpec)
 
 
 def load_config(path):
@@ -97,8 +104,26 @@ def parse_config(data, registry=INDICATORS):
     account = _parse_table(data.get("account", {}), "account", Account, _check_account)
     costs = _parse_table(data.get("costs", {}), "costs", Costs, _check_costs)
     windows = _parse_windows(data.get("windows", {}))
-    rest = {k: v for k, v in data.items() if k not in ("tiers", "fill", "account", "costs", "windows")}
-    return Config(out, fill, account, costs, rest, windows)
+    run = _parse_run(data.get("run", {}))
+    rest = {k: v for k, v in data.items() if k not in ("tiers", "fill", "account", "costs", "windows", "run")}
+    return Config(out, fill, account, costs, rest, windows, run)
+
+
+def _parse_run(r):
+    def err(why):
+        raise ConfigError(f"[run]：{why}")
+
+    if not isinstance(r, dict):
+        err("必須是表")
+    if set(r) - {"threads", "keep_windows"}:
+        err(f"不認得的鍵：{sorted(set(r) - {'threads', 'keep_windows'})}")
+    threads = r.get("threads", "auto")
+    if not (threads == "auto" or (isinstance(threads, int) and not isinstance(threads, bool) and threads >= 1)):
+        err(f'threads 必須是 "auto" 或正整數（目前 {threads!r}）')
+    keep = r.get("keep_windows", 10)
+    if not (isinstance(keep, int) and not isinstance(keep, bool) and keep >= 0):
+        err(f"keep_windows 必須是 0 以上的整數（目前 {keep!r}）")
+    return RunSpec(threads, keep)
 
 
 def _parse_windows(w):
@@ -183,6 +208,18 @@ def _parse_table(t, section, cls, check):
     if why:
         err(why)
     return out
+
+
+def shared_run(configs):
+    """整批策略共用同一組 [run]；不同就擋下。"""
+    configs = list(configs)
+    if not configs:
+        return RunSpec()
+    first = configs[0].run
+    for i, c in enumerate(configs[1:], start=2):
+        if c.run != first:
+            raise ConfigError(f"第 {i} 組策略的 [run] 跟第 1 組不同；[run] 整批共用，不能寫成範圍")
+    return first
 
 
 def shared_account(configs):
