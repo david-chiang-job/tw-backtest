@@ -19,9 +19,13 @@ buy_fee = 0.001425
 sell_fee = 0.001425
 sell_tax = 0.001
 
-# 成交模型：touch 表示盤中碰到門檻價就成交；同一天買賣都觸發時先買。
+# 成交模型 touch：觸價成交。只算當天振幅（最高減最低）中 band 的區間，
+# 加上開盤與收盤碰到的價位；影線最外側那段（這裡是最低 10% 與最高 10%）不算。
+# 開盤已越過觸發價（跳空）時，以開盤價成交。
+# same_day：同一天買賣都觸發時，buy_first 先買、sell_first 先賣。
 [fill]
 model = "touch"
+band = [0.10, 0.90]
 same_day = "buy_first"
 
 # 執行設定：threads 為 "auto" 或正整數；keep_windows 是只為前 N 名另存逐窗結果。
@@ -34,10 +38,11 @@ keep_windows = 5
 fixed = { lengths = [240, 720, 1200] }
 cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 
-# 買進檔位：加權條件，分數加到門檻才觸發。
-# 距高點跌 25% 給 2 分；200 日乖離低於門檻給 1 分；合計 3 分才買。
-# 乖離門檻寫成範圍（-15%、-10%、-5%），會展開成 3 組策略。
-# reset = "new_high"：觸發後要等創新高才會再觸發。
+# 買進檔位：加權條件，各條件觸發價由高到低累加分數，累積到門檻才觸發。
+# 距高點跌 25% 給 2 分，200 日乖離與 60 日乖離（-7%）各給 1 分，門檻 3 分：
+# 距高點加上任一條乖離就會觸發，只有兩條乖離湊不到。
+# 200 日乖離門檻寫成範圍（-15%、-10%、-5%），會展開成 3 組策略。
+# reset = "new_high"：有成交後，等收盤不低於前一天為止的最高收盤，隔天起才再待命。
 [[tiers]]
 name = "買進"
 target_stock = 0.8
@@ -48,11 +53,12 @@ score_at_least = 3
 weighted = [
   { indicator = "drawdown", at_most = -0.25, points = 2 },
   { indicator = "ma_deviation", days = 200, at_most = { from = -0.15, to = -0.05, step = 0.05 }, points = 1 },
+  { indicator = "ma_deviation", days = 60, at_most = -0.07, points = 1 },
 ]
 
 # 賣出檔位：any 表示子條件任一成立就觸發。
 # 200 日乖離高於 +18%，或 60 日乖離高於 +12%。
-# reset = "recross"：指標回到門檻另一側後才會再觸發。
+# reset = "recross"：有成交後，收盤回到當天觸發價的另一側（賣出是收盤低於觸發價），隔天起才再待命。
 [[tiers]]
 name = "賣出"
 target_stock = 0.5
