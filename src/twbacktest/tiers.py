@@ -14,7 +14,7 @@ RESETS = Registry("重置規則")
 
 @RESETS.register("recross")
 def recross(close, trigger, side):
-    """收盤回到觸發價的不利側（買進 close > P、賣出 close < P，嚴格不等）；P 為 NaN 為 False。"""
+    """收盤在觸發價另一側（買進收盤高於觸發價 close > P、賣出 close < P，嚴格不等）；P 為 NaN 為 False。"""
     with np.errstate(invalid="ignore"):
         return close > trigger if side == 1 else close < trigger
 

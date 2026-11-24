@@ -82,7 +82,8 @@ def _parse_fill(f):
     if same_day not in SAME_DAY:
         err(f"same_day 只能是 {' 或 '.join(SAME_DAY)}（目前 {same_day!r}）")
     params = {k: v for k, v in f.items() if k not in ("model", "same_day")}
-    known = {p.name for p in list(inspect.signature(fn).parameters.values())[6:]}  # 第 6 個之後是 side 之後的參數
+    names = list(inspect.signature(fn).parameters)
+    known = set(names[names.index("side") + 1 :])  # side 之後的參數才開放給 [fill]
     if set(params) - known:
         err(f"成交模型 {model} 不認得的鍵：{sorted(set(params) - known)}")
     return Fill(model, params, same_day)
