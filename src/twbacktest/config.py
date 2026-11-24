@@ -7,10 +7,13 @@ import tomllib
 from dataclasses import dataclass, field
 
 from .conditions import COMBINATORS
+from .fills import FILLS
 from .indicators import INDICATORS
+from .tiers import RESETS
 
 SIDES = {"at_most": 1, "at_least": -1}
 LEAF_STRUCT_KEYS = {"indicator", "points", *SIDES}
+SAME_DAY = ("buy_first", "sell_first")
 
 
 class ConfigError(ValueError):
@@ -27,8 +30,16 @@ class Tier:
 
 
 @dataclass(frozen=True)
+class Fill:
+    model: str = "touch"
+    params: dict = field(default_factory=dict)
+    same_day: str = "buy_first"
+
+
+@dataclass(frozen=True)
 class Config:
     tiers: list
+    fill: Fill = field(default_factory=Fill)
     extra: dict = field(default_factory=dict)
 
 
@@ -50,7 +61,31 @@ def parse_config(data, registry=INDICATORS):
     for i, t in enumerate(tiers):
         name = t.get("name", f"#{i}") if isinstance(t, dict) else f"#{i}"
         out.append(_parse_tier(t, name, registry))
-    return Config(out, {k: v for k, v in data.items() if k != "tiers"})
+    fill = _parse_fill(data.get("fill", {}))
+    return Config(out, fill, {k: v for k, v in data.items() if k not in ("tiers", "fill")})
+
+
+def _parse_fill(f):
+    def err(why):
+        raise ConfigError(f"[fill]：{why}")
+
+    if not isinstance(f, dict):
+        err("必須是表")
+    model = f.get("model", "touch")
+    if not isinstance(model, str):
+        err("model 必須是字串")
+    try:
+        fn = FILLS.get(model)
+    except KeyError as e:
+        err(str(e))
+    same_day = f.get("same_day", "buy_first")
+    if same_day not in SAME_DAY:
+        err(f"same_day 只能是 {' 或 '.join(SAME_DAY)}（目前 {same_day!r}）")
+    params = {k: v for k, v in f.items() if k not in ("model", "same_day")}
+    known = {p.name for p in list(inspect.signature(fn).parameters.values())[6:]}  # 第 6 個之後是 side 之後的參數
+    if set(params) - known:
+        err(f"成交模型 {model} 不認得的鍵：{sorted(set(params) - known)}")
+    return Fill(model, params, same_day)
 
 
 def _parse_tier(t, name, registry):
@@ -64,8 +99,14 @@ def _parse_tier(t, name, registry):
             err(k, "缺少此欄位")
     if not _is_num(t["target_stock"]):
         err("target_stock", "必須是數字")
+    if not 0 <= t["target_stock"] <= 1:
+        err("target_stock", f"必須介於 0 到 1（目前 {t['target_stock']!r}）")
     if not isinstance(t["reset"], str):
         err("reset", "必須是字串")
+    try:
+        RESETS.get(t["reset"])
+    except KeyError as e:
+        err("reset", str(e))
     sides = set()
     _check_node(t["when"], "when", registry, err, sides, in_weighted=False)
     if len(sides) != 1:

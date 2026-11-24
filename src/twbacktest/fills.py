@@ -38,3 +38,13 @@ def touch(open, high, low, close, trigger, side, band=(0.10, 0.90)):
     hit = hit & ~np.isnan(trigger)
     price = np.where(hit, np.where(gap, open, trigger), np.nan)
     return hit, price
+
+
+@FILLS.register("close_next_open")
+def close_next_open(open, high, low, close, trigger, side):
+    """收盤觸發、隔日開盤成交：第 d 天只看第 d-1 天的收盤與觸發價。"""
+    hit = np.zeros(len(close), dtype=bool)
+    with np.errstate(invalid="ignore"):
+        prev = close[:-1] <= trigger[:-1] if side == 1 else close[:-1] >= trigger[:-1]
+    hit[1:] = prev & ~np.isnan(trigger[:-1])
+    return hit, np.where(hit, open, np.nan)

@@ -62,5 +62,27 @@ class TouchEdges(unittest.TestCase):
         touch(O, H, L, C, P, 1, band=(0.5, 0.5))
 
 
+class CloseNextOpen(unittest.TestCase):
+    def test_prev_close_decides_and_today_open_fills(self):
+        # 買進、觸發價 100。第 1 天收盤 95 越過；第 2 天收盤 105 沒越過但盤中低到 90。
+        o = np.array([110.0, 98.0, 97.0])
+        h = np.array([112.0, 99.0, 106.0])
+        l = np.array([108.0, 94.0, 90.0])
+        c = np.array([110.0, 95.0, 105.0])
+        p = np.array([100.0, 100.0, 100.0])
+        hit, price = FILLS.get("close_next_open")(o, h, l, c, p, 1)
+        np.testing.assert_array_equal(hit, [False, False, True])
+        np.testing.assert_allclose(price, [np.nan, np.nan, 97.0])
+
+    def test_sell_and_nan_trigger(self):
+        o = np.array([100.0, 101.0, 102.0, 103.0])
+        c = np.array([100.0, 120.0, 100.0, 120.0])
+        p = np.array([110.0, 110.0, np.nan, 110.0])
+        hit, price = FILLS.get("close_next_open")(o, o, o, c, p, -1)
+        # 第 2 天看第 1 天（120 >= 110）觸發；第 3 天看第 2 天，其觸發價是 NaN，不觸發
+        np.testing.assert_array_equal(hit, [False, False, True, False])
+        self.assertEqual(price[2], 102.0)
+
+
 if __name__ == "__main__":
     unittest.main()
