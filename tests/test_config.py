@@ -2,7 +2,7 @@ import copy
 import tomllib
 import unittest
 
-from twbacktest.config import Account, ConfigError, Costs, parse_config, shared_account
+from twbacktest.config import Account, ConfigError, Costs, WindowSpec, parse_config, shared_account, shared_windows
 
 GOOD = """
 [[tiers]]
@@ -134,6 +134,52 @@ class ConfigChecks(unittest.TestCase):
         d = good()
         weighted(d)["any"] = [copy.deepcopy(weighted(d)["weighted"][0])]
         self.assert_rejected(d, "補倉")
+
+
+class WindowsSection(unittest.TestCase):
+    def parse(self, **w):
+        d = good()
+        if w:
+            d["windows"] = w
+        return parse_config(d)
+
+    def rejected(self, *words, **w):
+        with self.assertRaises(ConfigError) as cm:
+            self.parse(**w)
+        for x in words:
+            self.assertIn(x, str(cm.exception))
+
+    def test_defaults_when_missing_or_no_generator_key(self):
+        default = {"fixed": {"lengths": [240, 720, 1200]}, "cycles": {"counts": [1, 2, 3], "drawdown": 0.20}}
+        c = self.parse()
+        self.assertEqual((c.windows.spec, c.windows.score_end), (default, None))
+        c = self.parse(score_end="2025-08-31")
+        self.assertEqual((c.windows.spec, c.windows.score_end), (default, "2025-08-31"))
+        self.assertNotIn("windows", c.extra)
+
+    def test_list_and_table_forms(self):
+        c = self.parse(fixed=[3, 5], cycles={"counts": [1], "drawdown": 0.25})
+        self.assertEqual(c.windows.spec, {"fixed": {"lengths": [3, 5]}, "cycles": {"counts": [1], "drawdown": 0.25}})
+        c = self.parse(fixed={"lengths": [4]})
+        self.assertEqual(c.windows.spec, {"fixed": {"lengths": [4]}})  # 有寫就只跑寫到的
+
+    def test_rejected(self):
+        self.rejected("nope", "fixed", "cycles", nope=[1])
+        self.rejected("不認得的鍵", "foo", cycles={"foo": 1})
+        self.rejected("score_end", score_end="2025/08/31")
+        self.rejected("score_end", score_end="2025-13-40")
+        self.rejected("score_end", score_end=20250831)
+        self.rejected("fixed", fixed=5)
+
+    def test_shared_windows(self):
+        a, b, c = self.parse(fixed=[3]), self.parse(fixed=[3]), self.parse(fixed=[4])
+        self.assertEqual(shared_windows([a, b]), WindowSpec({"fixed": {"lengths": [3]}}, None))
+        with self.assertRaises(ConfigError) as cm:
+            shared_windows([a, c])
+        self.assertIn("[windows]", str(cm.exception))
+        d = self.parse(fixed=[3], score_end="2025-08-31")
+        with self.assertRaises(ConfigError):
+            shared_windows([a, d])
 
 
 class AccountAndCosts(unittest.TestCase):

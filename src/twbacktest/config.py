@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime
 import inspect
+import re
 import tomllib
 from dataclasses import dataclass, field, fields
 
@@ -10,6 +12,7 @@ from .conditions import COMBINATORS
 from .fills import FILLS
 from .indicators import INDICATORS
 from .tiers import RESETS
+from .windows import WINDOWS
 
 SIDES = {"at_most": 1, "at_least": -1}
 LEAF_STRUCT_KEYS = {"indicator", "points", *SIDES}
@@ -50,12 +53,26 @@ class Costs:
 
 
 @dataclass(frozen=True)
+class WindowSpec:
+    spec: dict = field(default_factory=lambda: _default_window_spec())  # {產生器名稱: 參數 dict}
+    score_end: str | None = None
+
+
+def _default_window_spec():
+    return {
+        "fixed": {"lengths": [240, 720, 1200]},
+        "cycles": {"counts": [1, 2, 3], "drawdown": 0.20},
+    }
+
+
+@dataclass(frozen=True)
 class Config:
     tiers: list
     fill: Fill = field(default_factory=Fill)
     account: Account = field(default_factory=Account)
     costs: Costs = field(default_factory=Costs)
     extra: dict = field(default_factory=dict)
+    windows: WindowSpec = field(default_factory=WindowSpec)
 
 
 def load_config(path):
@@ -79,8 +96,60 @@ def parse_config(data, registry=INDICATORS):
     fill = _parse_fill(data.get("fill", {}))
     account = _parse_table(data.get("account", {}), "account", Account, _check_account)
     costs = _parse_table(data.get("costs", {}), "costs", Costs, _check_costs)
-    rest = {k: v for k, v in data.items() if k not in ("tiers", "fill", "account", "costs")}
-    return Config(out, fill, account, costs, rest)
+    windows = _parse_windows(data.get("windows", {}))
+    rest = {k: v for k, v in data.items() if k not in ("tiers", "fill", "account", "costs", "windows")}
+    return Config(out, fill, account, costs, rest, windows)
+
+
+def _parse_windows(w):
+    def err(why):
+        raise ConfigError(f"[windows]：{why}")
+
+    if not isinstance(w, dict):
+        err("必須是表")
+    score_end = w.get("score_end")
+    if "score_end" in w:
+        ok = isinstance(score_end, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", score_end)
+        if ok:
+            try:
+                datetime.date.fromisoformat(score_end)
+            except ValueError:
+                ok = False
+        if not ok:
+            err(f"score_end 必須是 YYYY-MM-DD 字串（目前 {score_end!r}）")
+    spec = {}
+    for name, value in w.items():
+        if name == "score_end":
+            continue
+        try:
+            fn = WINDOWS.get(name)
+        except KeyError as e:
+            err(str(e))
+        names = list(inspect.signature(fn).parameters)
+        known = names[names.index("close") + 1 :]  # close 之後的參數才開放給 [windows]
+        if isinstance(value, list):
+            if not known:
+                err(f"窗口產生器 {name} 沒有可填的參數")
+            spec[name] = {known[0]: value}
+        elif isinstance(value, dict):
+            if set(value) - set(known):
+                err(f"窗口產生器 {name} 不認得的鍵：{sorted(set(value) - set(known))}（可用：{known}）")
+            spec[name] = dict(value)
+        else:
+            err(f"{name} 必須是清單或表（目前 {value!r}）")
+    return WindowSpec(spec or _default_window_spec(), score_end)
+
+
+def shared_windows(configs):
+    """整批策略共用同一組窗口；不同就擋下。"""
+    configs = list(configs)
+    if not configs:
+        return WindowSpec()
+    first = configs[0].windows
+    for i, c in enumerate(configs[1:], start=2):
+        if c.windows != first:
+            raise ConfigError(f"第 {i} 組策略的 [windows] 跟第 1 組不同；窗口這版整批共用，不能寫成範圍")
+    return first
 
 
 def _check_account(v):
