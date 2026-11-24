@@ -37,6 +37,19 @@ class Fill:
 
 
 @dataclass(frozen=True)
+class Account:
+    cash: float = 5_000_000
+    cash_rate: float = 0.015
+
+
+@dataclass(frozen=True)
+class Costs:
+    buy_fee: float = 0.00049875
+    sell_fee: float = 0.00049875
+    sell_tax: float = 0.001
+
+
+@dataclass(frozen=True)
 class Config:
     tiers: list
     fill: Fill = field(default_factory=Fill)
