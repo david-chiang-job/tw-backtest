@@ -46,11 +46,11 @@ py -m venv .venv
 .venv/Scripts/twbacktest run examples/basic.toml --out examples/out
 ```
 
-第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv` 與 `windows.csv`（欄位見〈輸出〉）。
+第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv`、`windows.csv` 與 `orders.csv`（欄位見〈輸出〉）。
 `examples/data/` 與 `examples/out/` 不進 git。
 
 範例設定檔 `examples/basic.toml` 示範：一個買進檔位（`weighted` 加權，其中一個門檻寫成範圍，展開成 3 組策略）、一個賣出檔位（`any`），以及 `[account]`、`[costs]`、`[fill]`、`[run]`、`[windows]` 各段的寫法，註解說明每段在做什麼。
-範例的參數只是示意，排名也只是合成行情上的結果，不代表任何結論。複製一份改參數就能用。
+範例的參數只是示意，排名也只是合成行情上的結果，不代表任何結論。複製一份改參數就能用；自己的設定檔、行情和輸出請放在 repo 外面，repo 裡不放策略、行情與回測結果。
 
 ## 資料格式
 
@@ -236,7 +236,7 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 
 ## 輸出
 
-`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出兩個 CSV（UTF-8），並在終端機印出組數、每塊組數、執行緒數、耗時，以及前 5 名。
+`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出三個 CSV（UTF-8），並在終端機印出組數、每塊組數、執行緒數、耗時，以及前 5 名。
 
 `scores.csv`：每組策略一列，依主排名分數由高到低（NaN 排最後）。
 
@@ -259,6 +259,26 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 
 `windows.csv`：只含分數前 `keep_windows` 名的策略（`strategy` 欄是策略編號）與 `baseline`，每個窗口一列。
 欄位：`strategy`、`kind`（`240d`、`cycle1` 等）、`start`、`end`、`cycle`（循環窗口的分組日期，固定期為空），後面接上述七個逐窗指標。
+
+`orders.csv`：逐筆成交，涵蓋的策略與順序跟 `windows.csv` 相同（分數前 `keep_windows` 名與 `baseline`）。
+每個窗口的每筆成交一列，成交日不晚於該窗口終點；沒有成交的窗口不出現。
+欄位：
+
+- `strategy`、`kind`、`start`、`end`、`cycle`：同 `windows.csv`，用來對回該窗口。
+- `tier`：成交的檔位名稱（設定檔的 `name`，沒寫時是 `#檔位序號`，從 0 起）；`baseline` 的列寫 `baseline`。
+- `trade_date`：成交日。
+- `trigger`：成交模型判斷這筆成交時比對的觸發價。`touch` 是成交當天該檔位的觸發價，`close_next_open` 是前一個交易日的觸發價（隔日開盤成交），`baseline` 是當天開盤價。自訂的成交模型沒有登記觸發價取法時寫 `nan`。
+- `price`：實際成交價。例如 `touch` 遇到開盤就跳過觸發價時，成交價是開盤價，跟 `trigger` 不同。
+- `units`：成交股數，買進為正、賣出為負。
+- `fee`、`tax`：手續費與證交稅（元，皆為正數）；稅只在賣出。
+- `cash_before`、`cash_after`：成交前（已含當日計息）與成交後的現金。
+- `units_after`：成交後的持股。
+
+`units`、`units_after` 是整數時寫整數，其餘數字寫法同 `windows.csv`。
+每一列都滿足：`cash_after = cash_before − units × price − fee − tax`，`fee = |units| × price × 費率`（買進用 `buy_fee`、賣出用 `sell_fee`），`tax = 賣出金額 × sell_tax`。
+同一個窗口相鄰兩筆之間，現金只差計息；窗口終點的淨值是最後一筆之後的現金（計息到終點）加持股乘終點收盤價。
+同一個起跑日的窗口共用同一條成交路徑，終點較晚的窗口就是多了較晚的成交。
+檔案大小隨 `keep_windows` × 窗口數 × 每個窗口的成交筆數成長；`keep_windows` 很大或成交很頻繁時檔案會很大，不需要時可調小 `keep_windows`。
 
 重新評分：
 

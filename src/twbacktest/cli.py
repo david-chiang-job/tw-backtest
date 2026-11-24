@@ -1,4 +1,4 @@
-"""命令列：run 跑整批並寫 scores.csv 與 windows.csv；score 只用逐窗結果重新評分排名。"""
+"""命令列：run 跑整批並寫 scores.csv、windows.csv 與 orders.csv；score 只用逐窗結果重新評分排名。"""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ from .scoring import RANK_BY, WindowMetrics, rank, summarize
 
 WINDOW_HEAD = ["strategy", "kind", "start", "end", "cycle"]
 METRIC_NAMES = [f.name for f in fields(WindowMetrics)]
+ORDER_HEAD = WINDOW_HEAD + ["tier", "trade_date", "trigger", "price", "units", "fee", "tax",
+                            "cash_before", "cash_after", "units_after"]
 BASELINE = "baseline"
 
 
@@ -67,6 +69,44 @@ def _write_windows(path, result, dates):
         w = csv.writer(f)
         w.writerow(WINDOW_HEAD + METRIC_NAMES)
         w.writerows(_window_rows(rows, result.windows, dates))
+
+
+def _qty(x):
+    """股數：整數寫整數，其餘照 _num。"""
+    return str(int(x)) if float(x).is_integer() else _num(x)
+
+
+def _order_rows(label, trades, row, tier_names, windows, dates):
+    """一組策略的 orders 列：每個窗口一一列出成交日不晚於終點的成交，窗口順序同 windows.csv。"""
+    f = trades.fills
+    J = len(windows.starts)
+    job_of = np.repeat(np.arange(J), np.diff(windows.ptr))
+    for e in range(len(windows.ends)):
+        job = row * J + int(job_of[e])
+        lo, hi = int(f.offset[job]), int(f.offset[job + 1])
+        hi = lo + int(np.searchsorted(f.day[lo:hi], windows.ends[e], side="right"))
+        if lo == hi:
+            continue
+        key = int(windows.key[e])
+        head = [label, str(windows.kind[e]), str(dates[windows.starts[job_of[e]]]), str(dates[windows.ends[e]]),
+                str(dates[key]) if key >= 0 else ""]
+        for i in range(lo, hi):
+            tier = BASELINE if tier_names is None else tier_names[int(f.tier[i])]
+            yield head + [tier, str(dates[f.day[i]]), _num(trades.trigger[i]), _num(f.price[i]), _qty(f.qty[i]),
+                          _num(f.fee[i]), _num(f.tax[i]), _num(f.cash_before[i]), _num(f.cash_after[i]),
+                          _qty(f.units_after[i])]
+
+
+def _write_orders(path, result, strategies, dates, which="top"):
+    """which 是 "top"（跟 windows.csv 相同）或 "kept"；baseline 一律另加在最後。"""
+    ids, trades = (result.top, result.top_trades) if which == "top" else (result.kept, result.kept_trades)
+    groups = [(str(i), trades, r, [t.name for t in strategies[i].config.tiers]) for r, i in enumerate(ids)]
+    groups.append((BASELINE, result.baseline_trades, 0, None))
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(ORDER_HEAD)
+        for g in groups:
+            w.writerows(_order_rows(*g, result.windows, dates))
 
 
 def read_windows(path):
@@ -120,6 +160,7 @@ def cmd_run(a):
     os.makedirs(a.out, exist_ok=True)
     _write_scores(os.path.join(a.out, "scores.csv"), strategies, result)
     _write_windows(os.path.join(a.out, "windows.csv"), result, market.dates)
+    _write_orders(os.path.join(a.out, "orders.csv"), result, strategies, market.dates)
     print(f"組數 {len(strategies)}，每塊 {result.chunk_size} 組，執行緒 {result.threads}，{secs:.2f} 秒")
     for r, i in enumerate(result.ranking[:5], start=1):
         print(f"{r}. 策略 {int(i)} {RANK_BY}={result.summary[RANK_BY][i]:.6g} {dict((_path_name(p), v) for p, v in strategies[i].picks.items())}")

@@ -8,10 +8,10 @@ from dataclasses import dataclass, fields
 import numba
 import numpy as np
 
-from .baseline import run_baseline
+from .baseline import run_baseline, run_baseline_fills
 from .config import shared_account, shared_windows
-from .grid import IndicatorCache
-from .kernel import Accounts, run_accounts
+from .grid import IndicatorCache, tier_trigger
+from .kernel import Accounts, Fills, run_accounts, run_accounts_with_fills
 from .scoring import RANK_BY, WindowMetrics, rank, summarize, window_metrics
 from .signals import build_signals
 from .windows import Windows, build_windows
@@ -21,6 +21,18 @@ _METRIC_COLS = len(fields(WindowMetrics))
 _ACCOUNT_COLS = len(fields(Accounts))
 _METRIC_TEMPS = 12  # window_metrics 內暫存的 [E] 陣列張數（估計值，偏高）
 _SIGNAL_TEMPS = 2  # build_signals 建表時的暫存倍數（估計值，偏高）
+
+
+# 成交模型判斷第 d 天成交時比對的是第 d - lag 天的觸發價；表裡沒有的自訂模型，trigger 欄寫 NaN。
+TRIGGER_LAG = {"touch": 0, "close_next_open": 1}
+
+
+@dataclass(frozen=True)
+class Trades:
+    """一組策略的逐筆成交：fills 的第 r 列策略是 [offset[r * J], offset[(r + 1) * J])，J 是起跑日數。"""
+
+    fills: Fills
+    trigger: np.ndarray  # [總筆數] float64，成交模型比對的觸發價；baseline 是當天開盤價
 
 
 @dataclass(frozen=True)
@@ -36,6 +48,9 @@ class RunResult:
     top_accounts: Accounts | None  # 各欄 [len(top), E]
     baseline_metrics: WindowMetrics  # 開場全倉的逐窗指標，各欄 [1, E]
     baseline_accounts: Accounts  # 開場全倉的帳戶結果，各欄 [1, E]
+    kept_trades: Trades | None  # kept 各策略的逐筆成交，列順序同 kept_metrics
+    top_trades: Trades | None  # top 各策略的逐筆成交，列順序同 top_metrics
+    baseline_trades: Trades  # 開場全倉的逐筆成交，只有 1 列
     chunk_size: int  # 實際用的每塊組數
     threads: int | None  # 實際用的執行緒數
 
@@ -63,6 +78,44 @@ def _rows(obj, idx):
 
 def _cat(cls, parts):
     return cls(**{f.name: np.concatenate([np.asarray(getattr(p, f.name)) for p in parts]) for f in fields(cls)})
+
+
+def _cat_fills(parts):
+    cols = {f.name: np.concatenate([getattr(p, f.name) for p in parts]) for f in fields(Fills) if f.name != "offset"}
+    base = np.cumsum([0] + [int(p.offset[-1]) for p in parts])
+    offset = np.concatenate([parts[0].offset[:1]] + [p.offset[1:] + b for p, b in zip(parts, base)])
+    return Fills(offset=offset, **cols)
+
+
+def _take_rows(trades, n_jobs, rows):
+    """取出第 rows 列策略（照給的順序）的成交。"""
+    off = trades.fills.offset
+    idx = np.concatenate([np.arange(off[r * n_jobs], off[(r + 1) * n_jobs]) for r in rows]).astype(np.int64)
+    counts = np.concatenate([np.diff(off[r * n_jobs : (r + 1) * n_jobs + 1]) for r in rows])
+    new = {f.name: getattr(trades.fills, f.name)[idx] for f in fields(Fills) if f.name != "offset"}
+    return Trades(Fills(offset=np.concatenate([[0], np.cumsum(counts)]).astype(np.int64), **new), trades.trigger[idx])
+
+
+def _run_trades(strategies, market, windows, account, costs, threads, cache, chunk_size):
+    """替給定的策略（整批、分塊只為省記憶體）跑記成交的核心，並另算每筆成交的觸發價。"""
+    parts, trig = [], []
+    for lo in range(0, len(strategies), chunk_size):
+        chunk = strategies[lo : lo + chunk_size]
+        sig = build_signals(chunk, market, cache=cache)
+        _, f = run_accounts_with_fills(sig, market, windows.starts, windows.ends, windows.ptr, account, costs,
+                                       threads=threads)
+        J = len(windows.starts)
+        t = np.full(len(f.day), np.nan)
+        for r, st in enumerate(chunk):
+            lag = TRIGGER_LAG.get(st.config.fill.model)
+            lo_, hi_ = f.offset[r * J], f.offset[(r + 1) * J]
+            if lag is None or lo_ == hi_:
+                continue
+            tr = np.stack([tier_trigger(tier, cache) for tier in st.config.tiers], axis=1)  # [D, 該策略檔位數]
+            t[lo_:hi_] = tr[f.day[lo_:hi_] - lag, f.tier[lo_:hi_]]
+        parts.append(f)
+        trig.append(t)
+    return Trades(_cat_fills(parts), np.concatenate(trig))
 
 
 def run_strategies(strategies, market, chunk_size=None, keep=(), keep_top=0, rank_by=RANK_BY,
@@ -135,5 +188,17 @@ def run_strategies(strategies, market, chunk_size=None, keep=(), keep_top=0, ran
         order = [kept_ids.index(i) for i in kept]
         km = _rows(_cat(WindowMetrics, kept_m), order)
         ka = _rows(_cat(Accounts, kept_a), order)
-    return RunResult(windows, summary, ranking, kept, km, ka, tuple(int(i) for i in top_ids), top_m, top_a,
-                     baseline_metrics, baseline, chunk_size, threads)
+    # 第二趟：評分與 top 都定案後，只替 kept ∪ top 與 baseline 另跑記成交的核心（整批一次，不受評分分塊影響）
+    top = tuple(int(i) for i in top_ids)
+    sel = list(dict.fromkeys(kept + top))
+    kt = tt = None
+    if sel:
+        trades = _run_trades([strategies[i] for i in sel], market, windows, account, costs, threads, cache, chunk_size)
+        row = {i: r for r, i in enumerate(sel)}
+        J = len(windows.starts)
+        kt = _take_rows(trades, J, [row[i] for i in kept]) if kept else None
+        tt = _take_rows(trades, J, [row[i] for i in top]) if top else None
+    _, bf = run_baseline_fills(market, windows, account, costs, threads=threads)
+    bt = Trades(bf, np.asarray(market.open, dtype=np.float64)[bf.day])
+    return RunResult(windows, summary, ranking, kept, km, ka, top, top_m, top_a,
+                     baseline_metrics, baseline, kt, tt, bt, chunk_size, threads)

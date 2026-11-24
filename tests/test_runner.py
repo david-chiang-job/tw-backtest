@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from dataclasses import fields
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -50,6 +51,11 @@ class ChunkInvariant(unittest.TestCase):
                 for obj in ("kept_metrics", "kept_accounts"):
                     for f in fields(getattr(whole, obj)):
                         self.assertTrue(same(getattr(getattr(r, obj), f.name), getattr(getattr(whole, obj), f.name)), f"{obj}.{f.name}")
+                for obj in ("kept_trades", "baseline_trades"):  # 第二趟的成交明細也不受分塊影響
+                    a, b = getattr(r, obj), getattr(whole, obj)
+                    self.assertTrue(same(a.trigger, b.trigger), f"{obj}.trigger")
+                    for f in fields(b.fills):
+                        self.assertTrue(same(getattr(a.fills, f.name), getattr(b.fills, f.name)), f"{obj}.{f.name}")
 
     def test_top_n_independent_of_chunk_size(self):
         whole = self.whole
@@ -67,6 +73,9 @@ class ChunkInvariant(unittest.TestCase):
                 for obj, base in (("top_metrics", "kept_metrics"), ("top_accounts", "kept_accounts")):
                     for f in fields(getattr(r, obj)):
                         self.assertTrue(same(getattr(getattr(r, obj), f.name), getattr(getattr(ref, base), f.name)), f"{obj}.{f.name}")
+                self.assertTrue(same(r.top_trades.trigger, ref.kept_trades.trigger))
+                for f in fields(r.top_trades.fills):
+                    self.assertTrue(same(getattr(r.top_trades.fills, f.name), getattr(ref.kept_trades.fills, f.name)), f.name)
         # 對照：同分的兩組策略逐窗結果確實是同一份數值但不是同一個索引（切線真的切在同分中間）
         self.assertEqual(s[top_n - 1], s[top_n])
         self.assertLess(whole.ranking[top_n - 1], whole.ranking[top_n])
@@ -103,6 +112,42 @@ class ChunkInvariant(unittest.TestCase):
             kw.setdefault("chunk_size", 3)
             with self.assertRaises(ValueError):
                 run_strategies(self.strategies, self.market, **kw)
+
+
+class TriggerPrice(unittest.TestCase):
+    """手造 12 天行情：第 3 天開盤 90 跳過觸發價 95（基準 100 × (1 - 0.05)）。"""
+
+    DATES = np.datetime64("2024-01-01") + np.arange(12)
+    OPEN = np.array([100, 100, 100, 90, 96, 97, 98, 99, 100, 100, 100, 100], dtype=float)
+    CLOSE = np.array([100, 100, 100, 94, 97, 98, 99, 100, 100, 100, 100, 100], dtype=float)
+    MARKET = SimpleNamespace(dates=DATES, open=OPEN, high=np.maximum(OPEN, CLOSE) + 1, low=np.minimum(OPEN, CLOSE) - 2,
+                             close=CLOSE)
+
+    def first_fill(self, model):
+        data = {
+            "windows": {"fixed": {"lengths": [8]}}, "fill": {"model": model},
+            "tiers": [{"name": "買", "target_stock": 0.8, "reset": "recross",
+                       "when": {"indicator": "ma_deviation", "days": 3, "at_most": -0.05}}],
+        }
+        r = run_strategies(expand(data), self.MARKET, keep=[0], keep_top=1, threads=1)
+        for t in (r.kept_trades, r.top_trades):
+            self.assertGreater(t.fills.offset[1], 0)  # 起跑日 0 有成交
+        f, trig = r.kept_trades.fills, r.kept_trades.trigger
+        self.assertEqual(int(f.tier[0]), 0)
+        return int(f.day[0]), float(f.price[0]), float(trig[0]), r
+
+    def test_touch_gap_down_price_is_open_and_trigger_is_same_day_level(self):
+        day, price, trigger, r = self.first_fill("touch")
+        self.assertEqual((day, price, trigger), (3, 90.0, 95.0))  # 價格是開盤、觸發價是 95，兩者不同
+        # baseline：觸發價欄是當天開盤價
+        b = r.baseline_trades
+        self.assertEqual(b.trigger[0], self.OPEN[int(b.fills.day[0])])
+        self.assertEqual(b.trigger[0], b.fills.price[0])
+
+    def test_close_next_open_trigger_is_previous_day_level(self):
+        day, price, trigger, _ = self.first_fill("close_next_open")
+        # 第 3 天收盤 94 <= 95，第 4 天開盤 96 成交；觸發價是第 3 天的 95
+        self.assertEqual((day, price, trigger), (4, 96.0, 95.0))
 
 
 if __name__ == "__main__":
