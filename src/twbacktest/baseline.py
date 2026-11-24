@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from .config import Account, Costs
-from .kernel import run_accounts
+from .kernel import run_accounts, run_accounts_with_fills
 from .signals import Signals
 
 
@@ -26,6 +26,14 @@ def full_position_signals(market) -> Signals:
 def run_baseline(market, windows, account=Account(), costs=Costs(), threads=None, unit=1.0):
     """回傳 Accounts，形狀 [1, E]，跟 windows.ends 一一對應。"""
     return run_accounts(
+        full_position_signals(market), market, windows.starts, windows.ends, windows.ptr,
+        account=account, costs=costs, threads=threads, unit=unit,
+    )  # fmt: skip
+
+
+def run_baseline_fills(market, windows, account=Account(), costs=Costs(), threads=None, unit=1.0):
+    """同 run_baseline，另回傳逐筆成交：(Accounts, Fills)，Fills 只有一個策略。"""
+    return run_accounts_with_fills(
         full_position_signals(market), market, windows.starts, windows.ends, windows.ptr,
         account=account, costs=costs, threads=threads, unit=unit,
     )  # fmt: skip

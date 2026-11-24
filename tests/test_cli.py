@@ -92,5 +92,32 @@ class RunThenScore(unittest.TestCase):
             self.assertNotEqual(scored["baseline"][2:], scored[rows[0][1]][2:])
 
 
+# 淺門檻、買賣都有，確保前 3 名都有成交
+ACTIVE = CONFIG.replace("from = -0.2, to = -0.02, step = 0.09", "from = -0.03, to = -0.01, step = 0.01")
+
+
+class OrdersCsv(unittest.TestCase):
+    def test_orders_cover_same_strategies_and_windows_as_windows_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            synthetic.write_csv(tmp, days=900)
+            cfg = os.path.join(tmp, "c.toml")
+            with open(cfg, "w", encoding="utf-8") as f:
+                f.write(ACTIVE)
+            out = os.path.join(tmp, "out")
+            self.assertEqual(main(["run", cfg, "--out", out]), 0)
+            _, wrows = read(os.path.join(out, "windows.csv"))
+            ohead, orows = read(os.path.join(out, "orders.csv"))
+        self.assertEqual(ohead, "strategy,kind,start,end,cycle,tier,trade_date,trigger,price,units,fee,tax,"
+                                "cash_before,cash_after,units_after".split(","))
+        self.assertEqual({r[0] for r in orows}, {r[0] for r in wrows})  # 策略集合相同
+        keys = {tuple(r[:5]) for r in wrows}
+        self.assertTrue(all(tuple(r[:5]) in keys for r in orows))  # 窗口鍵都對得上
+        self.assertTrue(all(r[2] <= r[6] <= r[3] for r in orows))  # 成交日在起迄之間（ISO 日期可直接比字串）
+        self.assertTrue(any(r[0] != "baseline" for r in orows))
+        self.assertTrue(any(r[0] == "baseline" for r in orows))
+        self.assertEqual({r[5] for r in orows if r[0] == "baseline"}, {"baseline"})
+        self.assertTrue({r[5] for r in orows if r[0] != "baseline"} <= {"買", "賣"})
+
+
 if __name__ == "__main__":
     unittest.main()
