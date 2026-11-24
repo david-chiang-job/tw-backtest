@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
 from .conditions import COMBINATORS
 from .fills import FILLS
@@ -53,6 +53,8 @@ class Costs:
 class Config:
     tiers: list
     fill: Fill = field(default_factory=Fill)
+    account: Account = field(default_factory=Account)
+    costs: Costs = field(default_factory=Costs)
     extra: dict = field(default_factory=dict)
 
 
@@ -75,7 +77,58 @@ def parse_config(data, registry=INDICATORS):
         name = t.get("name", f"#{i}") if isinstance(t, dict) else f"#{i}"
         out.append(_parse_tier(t, name, registry))
     fill = _parse_fill(data.get("fill", {}))
-    return Config(out, fill, {k: v for k, v in data.items() if k not in ("tiers", "fill")})
+    account = _parse_table(data.get("account", {}), "account", Account, _check_account)
+    costs = _parse_table(data.get("costs", {}), "costs", Costs, _check_costs)
+    rest = {k: v for k, v in data.items() if k not in ("tiers", "fill", "account", "costs")}
+    return Config(out, fill, account, costs, rest)
+
+
+def _check_account(v):
+    if not v.cash > 0:
+        return f"cash 必須大於 0（目前 {v.cash!r}）"
+    if not v.cash_rate > -1:
+        return f"cash_rate 必須大於 -1（目前 {v.cash_rate!r}）"
+
+
+def _check_costs(v):
+    for name in ("buy_fee", "sell_fee", "sell_tax"):
+        x = getattr(v, name)
+        if not 0 <= x < 1:
+            return f"{name} 必須在 0 到 1 之間、不含 1（目前 {x!r}）"
+
+
+def _parse_table(t, section, cls, check):
+    def err(why):
+        raise ConfigError(f"[{section}]：{why}")
+
+    if not isinstance(t, dict):
+        err("必須是表")
+    known = {f.name for f in fields(cls)}
+    if set(t) - known:
+        err(f"不認得的鍵：{sorted(set(t) - known)}（可用：{sorted(known)}）")
+    for k, v in t.items():
+        if not _is_num(v):
+            err(f"{k} 必須是數字（目前 {v!r}）")
+    out = cls(**t)
+    why = check(out)
+    if why:
+        err(why)
+    return out
+
+
+def shared_account(configs):
+    """整批策略共用同一組帳戶與費稅；不同就擋下。"""
+    configs = list(configs)
+    if not configs:
+        return Account(), Costs()
+    first = configs[0]
+    for i, c in enumerate(configs[1:], start=2):
+        if c.account != first.account or c.costs != first.costs:
+            raise ConfigError(
+                f"第 {i} 組策略的 [account] 或 [costs] 跟第 1 組不同；"
+                "本金、利率與費稅這版整批共用，不能寫成範圍"
+            )
+    return first.account, first.costs
 
 
 def _parse_fill(f):

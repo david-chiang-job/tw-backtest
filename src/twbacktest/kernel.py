@@ -121,14 +121,24 @@ def run_accounts(signals, market, starts, ends, ptr, account=Account(), costs=Co
     ends = np.ascontiguousarray(ends, dtype=np.int64)
     ptr = np.ascontiguousarray(ptr, dtype=np.int64)
     J = len(starts)
-    if len(ptr) != J + 1 or ptr[0] != 0 or ptr[-1] != len(ends) or np.any(np.diff(ptr) < 0):
-        raise ValueError("ptr 必須是長度 J + 1、從 0 開始、非遞減、結尾等於 len(ends)")
+    if len(ptr) != J + 1:
+        raise ValueError(f"ptr 長度必須是起跑日數 + 1 = {J + 1}（目前 {len(ptr)}）")
+    if ptr[0] != 0:
+        raise ValueError("ptr[0] 必須是 0")
+    if ptr[-1] != len(ends):
+        raise ValueError(f"ptr[-1] 必須等於 len(ends) = {len(ends)}（目前 {ptr[-1]}）")
+    if np.any(np.diff(ptr) <= 0):
+        raise ValueError("ptr 必須嚴格遞增：每個起跑日至少要有一個終點")
+    if J and (starts.min() < 0 or starts.max() >= D):
+        raise ValueError(f"起跑日索引必須在 0 到 {D - 1}")
     for j in range(J):
         seg = ends[ptr[j] : ptr[j + 1]]
-        if len(seg) and (np.any(np.diff(seg) < 0) or seg[0] < starts[j] or seg[-1] >= D):
-            raise ValueError(f"第 {j} 個起跑日的終點必須非遞減、不早於起跑日、小於 {D}")
-    if J and (starts.min() < 0 or starts.max() >= D):
-        raise ValueError("起跑日索引超出範圍")
+        if np.any(np.diff(seg) < 0):
+            raise ValueError(f"第 {j} 個起跑日的終點不可遞減")
+        if seg[0] < starts[j]:
+            raise ValueError(f"第 {j} 個起跑日的終點不可早於起跑日")
+        if seg[-1] >= D:
+            raise ValueError(f"第 {j} 個起跑日的終點必須小於 {D}")
     if not unit > 0:
         raise ValueError("unit 必須大於 0")
     growth = cash_growth(market.dates, account.cash_rate)
