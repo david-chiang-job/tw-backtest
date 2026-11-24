@@ -23,13 +23,13 @@
 當套件裝進自己的專案：
 
 ```text
-py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.1.0"
+py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.2.0"
 ```
 
 要跑範例：clone 固定版本標籤再裝。
 
 ```text
-git clone --branch v0.1.0 https://github.com/david-chiang-job/tw-backtest
+git clone --branch v0.2.0 https://github.com/david-chiang-job/tw-backtest
 cd tw-backtest
 py -m venv .venv
 .venv/Scripts/python -m pip install .
