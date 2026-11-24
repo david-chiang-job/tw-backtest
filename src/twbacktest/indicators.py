@@ -56,3 +56,13 @@ def ma_deviation(close, *, days):
     c = np.concatenate(([0.0], np.cumsum(close)))
     out[days:] = (c[days : len(close)] - c[: len(close) - days]) / days
     return out
+
+
+@register_indicator("drawdown")
+def drawdown(close):
+    """第 t 天的基準 = close[0..t-1] 的最高收盤（不含當天）；第 0 天為 NaN。"""
+    close = np.asarray(close, dtype=float)
+    out = np.full(len(close), np.nan)
+    if len(close) > 1:
+        out[1:] = np.maximum.accumulate(close)[:-1]
+    return out
