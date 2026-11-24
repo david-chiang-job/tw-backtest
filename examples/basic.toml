@@ -1,0 +1,65 @@
+# 範例設定：一個買進檔位、一個賣出檔位，配合合成行情跑通。
+# 先產生行情：py -m twbacktest.synthetic --out examples/data
+# 再執行：    twbacktest run examples/basic.toml --out examples/out
+# 參數只是示意，請照自己的想法改。
+
+# 行情資料夾，相對於這個設定檔所在的資料夾。
+# 檔名預設是合成行情的 taiex.csv 與 taiex-total-return.csv。
+[data]
+dir = "data"
+
+# 帳戶：起始本金與現金年利率。
+[account]
+cash = 1_000_000
+cash_rate = 0.01
+
+# 費用與稅：台股牌價（手續費 0.1425%、證交稅 0.1%）。
+[costs]
+buy_fee = 0.001425
+sell_fee = 0.001425
+sell_tax = 0.001
+
+# 成交模型：touch 表示盤中碰到門檻價就成交；同一天買賣都觸發時先買。
+[fill]
+model = "touch"
+same_day = "buy_first"
+
+# 執行設定：threads 為 "auto" 或正整數；keep_windows 是只為前 N 名另存逐窗結果。
+[run]
+threads = "auto"
+keep_windows = 5
+
+# 回測窗口：固定長度（交易日）與依跌幅切出的循環。不寫這段就是這組預設。
+[windows]
+fixed = { lengths = [240, 720, 1200] }
+cycles = { counts = [1, 2, 3], drawdown = 0.20 }
+
+# 買進檔位：加權條件，分數加到門檻才觸發。
+# 距高點跌 25% 給 2 分；200 日乖離低於門檻給 1 分；合計 3 分才買。
+# 乖離門檻寫成範圍（-15%、-10%、-5%），會展開成 3 組策略。
+# reset = "new_high"：觸發後要等創新高才會再觸發。
+[[tiers]]
+name = "買進"
+target_stock = 0.8
+reset = "new_high"
+
+[tiers.when]
+score_at_least = 3
+weighted = [
+  { indicator = "drawdown", at_most = -0.25, points = 2 },
+  { indicator = "ma_deviation", days = 200, at_most = { from = -0.15, to = -0.05, step = 0.05 }, points = 1 },
+]
+
+# 賣出檔位：any 表示子條件任一成立就觸發。
+# 200 日乖離高於 +18%，或 60 日乖離高於 +12%。
+# reset = "recross"：指標回到門檻另一側後才會再觸發。
+[[tiers]]
+name = "賣出"
+target_stock = 0.5
+reset = "recross"
+
+[tiers.when]
+any = [
+  { indicator = "ma_deviation", days = 200, at_least = 0.18 },
+  { indicator = "ma_deviation", days = 60, at_least = 0.12 },
+]
