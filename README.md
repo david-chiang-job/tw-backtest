@@ -23,13 +23,13 @@
 當套件裝進自己的專案：
 
 ```text
-py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.3.0"
+py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.4.0"
 ```
 
 要跑範例：clone 固定版本標籤再裝。
 
 ```text
-git clone --branch v0.3.0 https://github.com/david-chiang-job/tw-backtest
+git clone --branch v0.4.0 https://github.com/david-chiang-job/tw-backtest
 cd tw-backtest
 py -m venv .venv
 .venv/Scripts/python -m pip install .
@@ -46,11 +46,11 @@ py -m venv .venv
 .venv/Scripts/twbacktest run examples/basic.toml --out examples/out
 ```
 
-第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv`、`windows.csv` 與 `orders.csv`，另有圖表資料四份檔與每張圖一個 SVG（欄位見〈輸出〉）。
+第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv`、`windows.csv`、`orders.csv` 與紀錄檔 `run.json`，另有圖表資料四份檔與每張圖一個 SVG（欄位見〈輸出〉）。
 `examples/data/` 與 `examples/out/` 不進 git。
 
 範例設定檔 `examples/basic.toml` 示範：一個買進檔位（`weighted` 加權，其中一個門檻寫成範圍，展開成 3 組策略）、一個賣出檔位（`any`），以及 `[account]`、`[costs]`、`[fill]`、`[run]`、`[windows]` 各段的寫法，註解說明每段在做什麼。
-範例的參數只是示意，排名也只是合成行情上的結果，不代表任何結論。複製一份改參數就能用；自己的設定檔、行情和輸出請放在 repo 外面，repo 裡不放策略、行情與回測結果。
+範例的參數只是示意，排名也只是合成行情上的結果，不代表任何結論。複製一份改參數就能用；自己的設定檔、行情和輸出請放在 repo 外面，repo 裡不放策略、行情與回測結果；行情資料夾可以用 `--data` 指定（見〈輸出〉）。
 
 ## 資料格式
 
@@ -86,11 +86,12 @@ market = load_market("股價指數.csv", "報酬指數.csv")
 
 | 鍵 | 型別 | 預設 | 說明 |
 | --- | --- | --- | --- |
-| `dir` | 字串 | `"."` | 行情資料夾，相對於設定檔所在的資料夾 |
+| `dir` | 字串 | `"."` | 行情資料夾，相對於設定檔所在的資料夾；`run` 帶 `--data` 時改用命令列指定的資料夾 |
 | `price_index` | 字串 | `"taiex.csv"` | 股價指數檔名 |
 | `total_return` | 字串 | `"taiex-total-return.csv"` | 報酬指數檔名 |
 
 預設檔名就是合成行情的檔名。檔案格式見〈資料格式〉。
+設定檔只寫檔名、行情資料夾每次用 `--data` 指定，同一份設定檔就能換一份行情跑。
 
 ### `[account]`
 
@@ -236,7 +237,8 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 
 ## 輸出
 
-`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出三個 CSV（UTF-8）與圖表（見〈圖表〉），並在終端機印出組數、每塊組數、執行緒數、耗時、圖的張數，以及前 5 名。
+`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出三個 CSV（UTF-8）、紀錄檔 `run.json` 與圖表（見〈圖表〉），並在終端機印出組數、每塊組數、執行緒數、耗時、圖的張數，以及前 5 名。
+加上 `--data <行情資料夾>` 時改從那個資料夾讀行情，蓋過設定檔的 `[data] dir`；相對路徑從目前所在的資料夾算，檔名仍照設定檔。
 
 `scores.csv`：每組策略一列，依主排名分數由高到低（NaN 排最後）。
 
@@ -279,6 +281,19 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 同一個窗口相鄰兩筆之間，現金只差計息；窗口終點的淨值是最後一筆之後的現金（計息到終點）加持股乘終點收盤價。
 同一個起跑日的窗口共用同一條成交路徑，終點較晚的窗口就是多了較晚的成交。
 檔案大小隨 `keep_windows` × 窗口數 × 每個窗口的成交筆數成長；`keep_windows` 很大或成交很頻繁時檔案會很大，不需要時可調小 `keep_windows`。
+
+`run.json`：這批輸出是哪一版框架、哪份行情與設定、什麼環境跑出來的，日後對帳或重跑時拿來比對（UTF-8 JSON）。
+
+- `version`：這份檔的格式版本，目前是 `1`。
+- `framework`：`name`（`tw-backtest`）、`version`（套件版本）、`commit`。
+  `commit` 只有用〈安裝〉第一行那種 git 網址裝的才記得到；從本機資料夾安裝（含 `pip install -e .`）時是 `null`。
+- `runtime`：`python`、`numpy`、`numba` 的版本。
+- `inputs`：`price_index`、`total_return` 兩份行情檔各自的 `name`（檔名）、`rows`（資料列數，不含標頭）、`start`、`end`（檔內第一與最後一天）、`sha256`（整份檔的位元組）。
+- `config`：設定檔的 `name`（檔名）、`sha256`（整份檔的位元組）與 `values`（讀進來的設定值，TOML 的日期寫成 `YYYY-MM-DD` 字串）。
+  帶 `--data` 時，`values` 裡的 `[data] dir` 仍是設定檔寫的值；實際讀了哪份行情看 `inputs` 的雜湊。
+- `seconds`：回測本身的秒數，同終端機印的耗時，不含讀行情與寫檔。
+
+除了設定檔本身寫的 `[data] dir`，紀錄檔不寫本機路徑（`--data` 指定的資料夾也不寫）。
 
 ### 圖表
 

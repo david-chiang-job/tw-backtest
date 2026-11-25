@@ -1,8 +1,14 @@
 import csv
+import hashlib
+import json
 import os
+import platform
 import tempfile
+import tomllib
 import unittest
+from importlib import metadata
 
+import numba
 import numpy as np
 
 from twbacktest import synthetic
@@ -117,6 +123,65 @@ class OrdersCsv(unittest.TestCase):
         self.assertTrue(any(r[0] == "baseline" for r in orows))
         self.assertEqual({r[5] for r in orows if r[0] == "baseline"}, {"baseline"})
         self.assertTrue({r[5] for r in orows if r[0] != "baseline"} <= {"買", "賣"})
+
+
+def _expected_source(path):
+    """從檔案本身獨立算出 run.json 該記的筆數、起訖與 SHA-256。"""
+    with open(path, "rb") as f:
+        raw = f.read()
+    rows = list(csv.reader(raw.decode("utf-8").splitlines()))[1:]
+    return {"name": os.path.basename(path), "rows": len(rows), "start": rows[0][0], "end": rows[-1][0],
+            "sha256": hashlib.sha256(raw).hexdigest()}
+
+
+class RunRecord(unittest.TestCase):
+    """run.json 記下對帳要的欄位；--data 蓋過設定檔的 [data] dir，不帶時照設定檔。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        tmp = cls._tmp.name
+        cls.own = synthetic.write_csv(tmp, days=900)  # 設定檔 dir = "." 指到的行情
+        cls.other_dir = os.path.join(tmp, "other")
+        cls.other = synthetic.write_csv(cls.other_dir, days=950)  # 只有 --data 會讀到的行情
+        cls.cfg = os.path.join(tmp, "c.toml")
+        with open(cls.cfg, "w", encoding="utf-8") as f:
+            f.write(CONFIG)
+        cls.out_own = os.path.join(tmp, "own")
+        cls.out_other = os.path.join(tmp, "other-out")
+        cls.code_own = main(["run", cls.cfg, "--out", cls.out_own])
+        cls.code_other = main(["run", cls.cfg, "--out", cls.out_other, "--data", cls.other_dir])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def record(self, out):
+        with open(os.path.join(out, "run.json"), encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_record_has_every_field(self):
+        self.assertEqual(self.code_own, 0)
+        rec = self.record(self.out_own)
+        self.assertEqual(rec["framework"]["name"], "tw-backtest")
+        self.assertEqual(rec["framework"]["version"], metadata.version("tw-backtest"))
+        self.assertIn("commit", rec["framework"])
+        self.assertEqual(rec["runtime"], {"python": platform.python_version(), "numpy": np.__version__,
+                                          "numba": numba.__version__})
+        with open(self.cfg, "rb") as f:
+            raw = f.read()
+        self.assertEqual(rec["config"], {"name": "c.toml", "sha256": hashlib.sha256(raw).hexdigest(),
+                                         "values": tomllib.loads(CONFIG)})
+        self.assertIsInstance(rec["seconds"], float)
+        self.assertGreaterEqual(rec["seconds"], 0)
+
+    def test_data_option_overrides_config_dir(self):
+        self.assertEqual((self.code_own, self.code_other), (0, 0))
+        own = {"price_index": _expected_source(self.own[0]), "total_return": _expected_source(self.own[1])}
+        other = {"price_index": _expected_source(self.other[0]), "total_return": _expected_source(self.other[1])}
+        self.assertNotEqual(own, other)  # 兩份行情分得出來，下面兩條才有意義
+        self.assertEqual(self.record(self.out_own)["inputs"], own)  # 不帶 --data：照設定檔
+        self.assertEqual(self.record(self.out_other)["inputs"], other)  # 帶 --data：改讀那裡
 
 
 if __name__ == "__main__":
