@@ -23,13 +23,13 @@
 當套件裝進自己的專案：
 
 ```text
-py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.2.0"
+py -m pip install "git+https://github.com/david-chiang-job/tw-backtest@v0.3.0"
 ```
 
 要跑範例：clone 固定版本標籤再裝。
 
 ```text
-git clone --branch v0.2.0 https://github.com/david-chiang-job/tw-backtest
+git clone --branch v0.3.0 https://github.com/david-chiang-job/tw-backtest
 cd tw-backtest
 py -m venv .venv
 .venv/Scripts/python -m pip install .
@@ -46,7 +46,7 @@ py -m venv .venv
 .venv/Scripts/twbacktest run examples/basic.toml --out examples/out
 ```
 
-第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv`、`windows.csv` 與 `orders.csv`（欄位見〈輸出〉）。
+第一行產生合成行情到範例設定檔讀的 `examples/data/`；第二行跑回測，印出組數、耗時與前幾名策略，並在 `examples/out/` 寫出 `scores.csv`、`windows.csv` 與 `orders.csv`，另有圖表資料四份檔與每張圖一個 SVG（欄位見〈輸出〉）。
 `examples/data/` 與 `examples/out/` 不進 git。
 
 範例設定檔 `examples/basic.toml` 示範：一個買進檔位（`weighted` 加權，其中一個門檻寫成範圍，展開成 3 組策略）、一個賣出檔位（`any`），以及 `[account]`、`[costs]`、`[fill]`、`[run]`、`[windows]` 各段的寫法，註解說明每段在做什麼。
@@ -236,7 +236,7 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 
 ## 輸出
 
-`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出三個 CSV（UTF-8），並在終端機印出組數、每塊組數、執行緒數、耗時，以及前 5 名。
+`twbacktest run <設定檔> --out <資料夾>` 在資料夾寫出三個 CSV（UTF-8）與圖表（見〈圖表〉），並在終端機印出組數、每塊組數、執行緒數、耗時、圖的張數，以及前 5 名。
 
 `scores.csv`：每組策略一列，依主排名分數由高到低（NaN 排最後）。
 
@@ -279,6 +279,32 @@ cycles = { counts = [1, 2, 3], drawdown = 0.20 }
 同一個窗口相鄰兩筆之間，現金只差計息；窗口終點的淨值是最後一筆之後的現金（計息到終點）加持股乘終點收盤價。
 同一個起跑日的窗口共用同一條成交路徑，終點較晚的窗口就是多了較晚的成交。
 檔案大小隨 `keep_windows` × 窗口數 × 每個窗口的成交筆數成長；`keep_windows` 很大或成交很頻繁時檔案會很大，不需要時可調小 `keep_windows`。
+
+### 圖表
+
+`run` 跑完會替 `orders.csv` 裡的策略（分數前 `keep_windows` 名，不含 `baseline`）各畫圖：先寫四份圖表資料檔，再畫成 `Chart 001.svg`、`Chart 002.svg`…，檔名依序編號，策略照排名、同策略內照起跑日。
+圖上有 K 線（開高低收，收盤高於或等於開盤紅、否則綠）、黑色收盤線、灰色虛線的指標線（均線或前高）、各檔位的觸發價線，以及成交點（紅 ▲ 買、綠 ▼ 賣）；成交日跟訊號日不同時，訊號日在收盤線上多一個空心圓。
+
+代表窗口：每組策略每場循環一張圖。有 `cycle1` 窗口時，每場循環取「前高往前推 12 個曆月（月底不存在就取該月最後一天）之後的第一個交易日」起跑、到收復日結束；但起跑日不早於該場 `cycle1` 窗口最早的起跑日（更早的起跑日會配到上一場循環）。沒有 `cycle1` 窗口時，取最長的固定期種類裡終點最晚的窗口（同終點取起跑日最晚），只出一張。
+
+四份檔（UTF-8，數字寫法同其他 CSV，NaN 寫空字串）：
+
+- `Chart Data.json`：`windows` 每張圖一筆（`strategy`、`kind`、`cycle`、`start`、`end`、`file`；`strategy`、`cycle` 同 `orders.csv`、`windows.csv`）；`series` 是價格序列的說明；`strategies` 以策略編號為鍵，列出各檔位（`slot` 從 1 起、`name`、`side`、`target_stock`、`when`）與指標線（`lines`）；`inputs` 是兩份行情檔的檔名與 sha256。
+- `Chart Prices.csv`：`date`、`series`、`open`、`high`、`low`、`close`；報酬指數的開高低收，只含任一張圖涵蓋的日期。
+- `Chart Levels.csv`：`date`、`series`、`strategy`、`level`、`slot`、`moving_average`、`threshold`、`negative_deviation`、`target_weight`。`level` 是 `buy` 或 `sell` 時，`slot` 是檔位序號、`threshold` 是當天的觸發價、`target_weight` 是該檔位的目標持股；`level` 是 `line` 時，`slot` 是線名（`ma_deviation` 寫 `MA天數`、`drawdown` 寫 `Prior high`，其他指標寫 `名稱(參數)`），`moving_average` 是當天的基準值。`negative_deviation` 目前留空。
+- `Chart Events.csv`：`strategy`、`cycle`、`window_start`、`signal_date`、`trade_date`、`side`、`slot`、`price`、`series`；每張圖窗口內每筆成交一列，成交價與日期跟 `orders.csv` 相同；`signal_date` 是成交日往前推成交模型的延遲（`touch` 是 0、`close_next_open` 是 1 個交易日），自訂成交模型寫空。
+
+SVG 只從這四份檔畫成，所以也能不重跑回測重畫：
+
+```text
+.venv/Scripts/python -m twbacktest.chart_svg <資料夾>
+```
+
+範例（合成行情、參數只是示意）：
+
+![範例圖](examples/chart.svg)
+
+在 GitHub 上要看每個交易日的游標說明（日期、開高低收、指標線與各檔位當天的觸發價），裝 [Mermaid Pan & Zoom](https://github.com/david-chiang-job/mermaid-pan-zoom)。
 
 重新評分：
 

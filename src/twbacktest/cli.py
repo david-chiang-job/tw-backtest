@@ -12,7 +12,7 @@ from dataclasses import fields
 import numpy as np
 
 from . import synthetic
-from .charts import write_chart_data
+from .charts import write_charts
 from .config import ConfigError, load_config, shared_run
 from .data import load_market
 from .grid import expand
@@ -162,8 +162,9 @@ def cmd_run(a):
     _write_scores(os.path.join(a.out, "scores.csv"), strategies, result)
     _write_windows(os.path.join(a.out, "windows.csv"), result, market.dates)
     _write_orders(os.path.join(a.out, "orders.csv"), result, strategies, market.dates)
-    write_chart_data(a.out, result, strategies, market, which="top")
+    drawn = write_charts(a.out, result, strategies, market, which="top")
     print(f"組數 {len(strategies)}，每塊 {result.chunk_size} 組，執行緒 {result.threads}，{secs:.2f} 秒")
+    print(f"圖 {len(drawn)} 張")
     for r, i in enumerate(result.ranking[:5], start=1):
         print(f"{r}. 策略 {int(i)} {RANK_BY}={result.summary[RANK_BY][i]:.6g} {dict((_path_name(p), v) for p, v in strategies[i].picks.items())}")
 
