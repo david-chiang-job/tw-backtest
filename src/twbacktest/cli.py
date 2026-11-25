@@ -1,14 +1,19 @@
-"""命令列：run 跑整批並寫 scores.csv、windows.csv、orders.csv 與圖表資料四份檔；score 只用逐窗結果重新評分排名。"""
+"""命令列：run 跑整批並寫 scores.csv、windows.csv、orders.csv、run.json 與圖表資料四份檔；score 只用逐窗結果重新評分排名。"""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import os
+import platform
 import sys
 import time
-from dataclasses import fields
+from dataclasses import asdict, fields
+from importlib import metadata
 
+import numba
 import numpy as np
 
 from . import synthetic
@@ -25,6 +30,8 @@ METRIC_NAMES = [f.name for f in fields(WindowMetrics)]
 ORDER_HEAD = WINDOW_HEAD + ["tier", "trade_date", "trigger", "price", "units", "fee", "tax",
                             "cash_before", "cash_after", "units_after"]
 BASELINE = "baseline"
+RECORD_FILE = "run.json"
+PACKAGE = "tw-backtest"
 
 
 class _W:  # summarize 只需要 kind 與 key
@@ -110,6 +117,31 @@ def _write_orders(path, result, strategies, dates, which="top"):
             w.writerows(_order_rows(*g, result.windows, dates))
 
 
+def _framework():
+    """套件版本與 commit；commit 只有從 git 網址安裝時 pip 才記下，其他裝法是 None。"""
+    try:
+        dist = metadata.distribution(PACKAGE)
+    except metadata.PackageNotFoundError:
+        return {"name": PACKAGE, "version": None, "commit": None}
+    direct = json.loads(dist.read_text("direct_url.json") or "{}")
+    return {"name": PACKAGE, "version": dist.version, "commit": direct.get("vcs_info", {}).get("commit_id")}
+
+
+def _write_record(path, cfg_path, data, market, secs):
+    """對帳用：哪一版框架、哪份行情與設定、什麼執行環境跑出這批輸出。"""
+    with open(cfg_path, "rb") as f:
+        cfg_sha = hashlib.sha256(f.read()).hexdigest()
+    doc = {"version": 1,
+           "framework": _framework(),
+           "runtime": {"python": platform.python_version(), "numpy": np.__version__, "numba": numba.__version__},
+           "inputs": {"price_index": asdict(market.price_index), "total_return": asdict(market.total_return)},
+           "config": {"name": os.path.basename(cfg_path), "sha256": cfg_sha, "values": data},
+           "seconds": round(secs, 3)}
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2, default=str)  # TOML 的日期寫成 ISO 字串
+        f.write("\n")
+
+
 def read_windows(path):
     """讀 windows.csv，回傳 (策略標籤 list, WindowMetrics [S, E], 窗口 kind/key 物件)。分組鍵同一個日期對到同一個整數。"""
     with open(path, newline="", encoding="utf-8") as f:
@@ -142,9 +174,10 @@ def score_file(path, by=RANK_BY):
     return labels, summary, [idx[i] for i in order]
 
 
-def _market(data, base):
+def _market(data, base, folder=None):
+    """folder 有給就蓋過設定檔的 [data] dir；檔名照舊讀設定檔。"""
     d = data.get("data", {})
-    folder = os.path.join(base, d.get("dir", "."))
+    folder = folder or os.path.join(base, d.get("dir", "."))
     return load_market(os.path.join(folder, d.get("price_index", synthetic.PRICE_FILE)),
                        os.path.join(folder, d.get("total_return", synthetic.TOTAL_RETURN_FILE)))
 
@@ -154,7 +187,7 @@ def cmd_run(a):
     data = load_config(cfg_path)
     strategies = expand(data)
     run = shared_run([s.config for s in strategies])
-    market = _market(data, os.path.dirname(cfg_path))
+    market = _market(data, os.path.dirname(cfg_path), os.path.abspath(a.data) if a.data else None)
     t0 = time.perf_counter()
     result = run_strategies(strategies, market, keep_top=run.keep_windows, threads=run.threads)
     secs = time.perf_counter() - t0
@@ -162,6 +195,7 @@ def cmd_run(a):
     _write_scores(os.path.join(a.out, "scores.csv"), strategies, result)
     _write_windows(os.path.join(a.out, "windows.csv"), result, market.dates)
     _write_orders(os.path.join(a.out, "orders.csv"), result, strategies, market.dates)
+    _write_record(os.path.join(a.out, RECORD_FILE), cfg_path, data, market, secs)
     drawn = write_charts(a.out, result, strategies, market, which="top")
     print(f"組數 {len(strategies)}，每塊 {result.chunk_size} 組，執行緒 {result.threads}，{secs:.2f} 秒")
     print(f"圖 {len(drawn)} 張")
@@ -192,6 +226,7 @@ def main(argv=None):
     r = sub.add_parser("run", help="跑整批策略")
     r.add_argument("config")
     r.add_argument("--out", required=True, help="輸出資料夾")
+    r.add_argument("--data", help="行情資料夾，蓋過設定檔的 [data] dir；相對路徑從目前資料夾算")
     r.set_defaults(fn=cmd_run)
     s = sub.add_parser("score", help="用 windows.csv 重新評分排名")
     s.add_argument("windows")
