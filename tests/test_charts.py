@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -47,15 +48,19 @@ class ChartData(unittest.TestCase):
         for name in FILES:
             self.assertTrue(os.path.isfile(os.path.join(self.out, name)), name)
         self.assertTrue(self.doc["windows"])
+        for w in self.doc["windows"]:
+            self.assertTrue(os.path.isfile(os.path.join(self.out, w["file"])), w["file"])
 
-    def test_chart_events_match_orders_csv(self):
+    def test_chart_svg_trades_match_orders_csv(self):
         total, sides = 0, set()
         for w in self.doc["windows"]:
-            want = [(r[6], self.slot_of(w["strategy"])[r[5]], r[8]) for r in self.orders
+            want = [(r[6], str(self.slot_of(w["strategy"])[r[5]]), r[8]) for r in self.orders
                     if r[:4] == [w["strategy"], w["kind"], w["start"], w["end"]]]
-            got = [(r[4], r[6], r[7]) for r in self.events
-                   if r[0] == w["strategy"] and r[1] == w["cycle"] and r[2] == w["start"]]
-            self.assertEqual(want, [(d, int(s), p) for d, s, p in got], w)
+            with open(os.path.join(self.out, w["file"]), encoding="utf-8") as f:
+                svg = f.read()
+            got = [(m[0], m[1], m[2]) for m in re.findall(
+                r'<polygon data-kind="trade" data-date="([^"]*)" data-slot="([^"]*)" data-price="([^"]*)"', svg)]
+            self.assertEqual(want, got, w)
             total += len(got)
             sides |= {r[5] for r in self.events if r[0] == w["strategy"] and r[2] == w["start"]}
         self.assertGreater(total, 0)

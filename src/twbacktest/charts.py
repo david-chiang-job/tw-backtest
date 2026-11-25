@@ -11,6 +11,7 @@ from datetime import date
 
 import numpy as np
 
+from .chart_svg import render_charts
 from .config import leaf_params, shared_windows
 from .grid import IndicatorCache, tier_trigger
 from .indicators import INDICATORS
@@ -109,7 +110,7 @@ def write_chart_data(out_dir, result, strategies, market, which="top"):
     """which 是 "top" 或 "kept"；策略集合是空的就什麼都不寫。"""
     ids, trades = (result.top, result.top_trades) if which == "top" else (result.kept, result.kept_trades)
     if not len(ids):
-        return
+        return False
     windows, dates = result.windows, market.dates
     spec = shared_windows([s.config for s in strategies]).spec
     drawdown = (spec.get("cycles") or {}).get("drawdown", DEFAULT_DRAWDOWN)
@@ -182,3 +183,11 @@ def write_chart_data(out_dir, result, strategies, market, which="top"):
                for d in sorted(price_days)))
     write_csv(LEVELS_FILE, LEVELS_HEAD, level_rows)
     write_csv(EVENTS_FILE, EVENTS_HEAD, event_rows)
+    return True
+
+
+def write_charts(out_dir, result, strategies, market, which="top"):
+    """寫四份圖表資料檔再畫 SVG，回傳畫出的檔名清單；策略集合是空的就什麼都不做。"""
+    if not write_chart_data(out_dir, result, strategies, market, which):
+        return []
+    return [name for _, name in render_charts(out_dir)]
