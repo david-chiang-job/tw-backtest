@@ -24,6 +24,15 @@ class SourceFile:
 
 
 @dataclass(frozen=True)
+class VolumeData:
+    dates: np.ndarray
+    volume: np.ndarray
+    turnover: np.ndarray
+    transactions: np.ndarray
+    source: SourceFile
+
+
+@dataclass(frozen=True)
 class Market:
     dates: np.ndarray
     open: np.ndarray
@@ -32,10 +41,15 @@ class Market:
     close: np.ndarray
     price_index: SourceFile
     total_return: SourceFile
+    volume: np.ndarray | None = None
+    turnover: np.ndarray | None = None
+    transactions: np.ndarray | None = None
+    volume_source: SourceFile | None = None
 
 
 _PRICE_COLS = ["date", "open", "high", "low", "close"]
 _TR_COLS = ["date", "close"]
+_VOLUME_COLS = ["date", "volume", "turnover", "transactions"]
 
 
 def _read(path, cols):
@@ -82,7 +96,22 @@ def _read(path, cols):
     return out, src
 
 
-def load_market(price_index, total_return) -> Market:
+def load_volume(volume) -> VolumeData:
+    """讀入大盤成交量 CSV（date,volume,turnover,transactions）。"""
+    v_rows, v_src = _read(volume, _VOLUME_COLS)
+    n = len(v_rows)
+    vol = np.empty(n)
+    turn = np.empty(n)
+    tx = np.empty(n)
+    for i, (_, (vv, tv, xv)) in enumerate(v_rows):
+        vol[i] = vv
+        turn[i] = tv
+        tx[i] = xv
+    dates = np.array([d for d, _ in v_rows], dtype="datetime64[D]")
+    return VolumeData(dates, vol, turn, tx, v_src)
+
+
+def load_market(price_index, total_return, volume=None) -> Market:
     p_rows, p_src = _read(price_index, _PRICE_COLS)
     t_rows, t_src = _read(total_return, _TR_COLS)
     first = t_rows[0][0]
@@ -107,4 +136,21 @@ def load_market(price_index, total_return) -> Market:
         lo[i] = pl * ratio
         c[i] = tc
     dates = np.array([d for d, _ in t_rows], dtype="datetime64[D]")
-    return Market(dates, o, h, lo, c, p_src, t_src)
+    if volume is None:
+        return Market(dates, o, h, lo, c, p_src, t_src)
+    v_rows, v_src = _read(volume, _VOLUME_COLS)
+    v_rows = [r for r in v_rows if r[0] >= first]
+    v_by_date = {d: v for d, v in v_rows}
+    for d, _ in t_rows:
+        if d not in v_by_date:
+            raise DataError(f"{v_src.name}: 缺少 {d}（報酬指數 {t_src.name} 有這一天）")
+    for d, _ in v_rows:
+        if d not in t_dates:
+            raise DataError(f"{v_src.name}: {d} 在報酬指數 {t_src.name} 沒有")
+    vol = np.empty(n); turn = np.empty(n); tx = np.empty(n)
+    for i, (d, _) in enumerate(t_rows):
+        vv, tv, xv = v_by_date[d]
+        vol[i] = vv
+        turn[i] = tv
+        tx[i] = xv
+    return Market(dates, o, h, lo, c, p_src, t_src, vol, turn, tx, v_src)

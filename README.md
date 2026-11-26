@@ -9,7 +9,8 @@
 
 主要能力：
 
-- 兩種內建指標：`ma_deviation`（均線乖離）與 `drawdown`（距前高）。
+- 兩種內建設定檔價位指標：`ma_deviation`（均線乖離）與 `drawdown`（距前高）。
+- 純 NumPy 技術指標與跨週期工具庫：`twbacktest.ta`（均線與趨勢、動能震盪、通道與波動、量價、K 線與結構）與 `twbacktest.timeframe`（日線轉週線與嚴格零前視日線映射）。
 - 三種條件組合 `any`、`all`、`weighted`，可以巢狀。
 - 兩種成交：觸價成交 `touch`，以及收盤觸發、隔日開盤成交 `close_next_open`。
 - 三種重置規則：`recross`、`new_high`、`none`。
@@ -58,6 +59,7 @@ py -m venv .venv
 
 - 股價指數：`date,open,high,low,close`
 - 報酬指數：`date,close`
+- 成交量（選填，例如 `taiex-volume.csv`）：`date,volume,turnover,transactions`（成交股數、成交金額、成交筆數）
 
 載入時會檢查，任一項不符就丟 `DataError`，訊息寫出檔名、日期或行號與原因：
 
@@ -72,9 +74,11 @@ py -m venv .venv
 載入結果會記下每個檔案的檔名、筆數、起訖日期與 SHA-256。
 
 ```python
-from twbacktest.data import load_market
+from twbacktest.data import load_market, load_volume
 
 market = load_market("股價指數.csv", "報酬指數.csv")
+market_with_vol = load_market("股價指數.csv", "報酬指數.csv", volume="成交量.csv")
+vol = load_volume("成交量.csv")
 ```
 
 ## 設定檔
@@ -339,6 +343,31 @@ py -m twbacktest.synthetic --out <資料夾> [--days N] [--seed S]
 ```
 
 會在資料夾寫出 `taiex.csv` 與 `taiex-total-return.csv`。
+
+## 技術指標與跨週期週線工具
+
+除了供 TOML 設定檔使用的價位型 `INDICATORS` 登記表，套件另提供純 NumPy、嚴格零前視偏差的常用技術指標（`twbacktest.ta`）與日轉週重採樣（`twbacktest.timeframe`），供 Python 研究腳本直接呼叫。
+
+所有指標皆遵守因果契約：第 `t` 天數值僅使用 `0..t`（截至第 `t` 天收盤）資料，暖機期填 `np.nan`，將序列截斷至 `[:t+1]` 重算結果不變。
+
+| 類別 | 函式（`twbacktest.ta`） | 說明 |
+| --- | --- | --- |
+| 均線與趨勢 | `sma`、`ema`、`ma_bias`、`ma_slope`、`macd`、`adx` | 簡單／指數均線、乖離率、斜率、MACD（DIF／DEA／Histogram）、Wilder DMI／ADX |
+| 動能震盪 | `rsi`、`stochastic`、`roc` | Wilder RSI、KD（支援 `sma` 與台股 `recursive` 平滑）、變動率 |
+| 通道與波動 | `bollinger_bands`、`donchian_channel`、`true_range`、`atr`、`chandelier_exit`、`tr_ratio` | 布林通道（含帶寬與 %B）、Donchian 通道、TR／ATR、吊燈回落線、振幅倍數 |
+| 量價指標 | `volume_ratio`、`obv`、`mfi` | 量比（適用成交股數或成交金額）、OBV 能量潮、MFI 資金流量指標 |
+| K 線與結構 | `candle_ratios`、`rolling_drawdown`、`rolling_runup` | 實體與上下影線比例、近 N 日高點回落、近 N 日低點漲幅 |
+| 跨週期週線 | `twbacktest.timeframe.resample_weekly`、`weekly_to_daily_ffill` | 依 ISO 週彙總 OHLCV；映射回日線預設 `strict_prior_week=True`（僅取前週已定案值，絕不偷看當週週五收盤） |
+
+```python
+from twbacktest import ta
+from twbacktest.timeframe import resample_weekly, weekly_to_daily_ffill
+
+rsi14 = ta.rsi(market.close, 14)
+m = ta.macd(market.close, 12, 26, 9)
+wb = resample_weekly(market.dates, market.open, market.high, market.low, market.close)
+weekly_sma20_on_daily = weekly_to_daily_ffill(market.dates, wb.week_end_dates, ta.sma(wb.close, 20))
+```
 
 ## 怎麼加一種新指標
 
