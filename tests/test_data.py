@@ -2,10 +2,11 @@ import os
 import tempfile
 import unittest
 
-from twbacktest.data import DataError, load_market
+from twbacktest.data import DataError, load_market, load_volume
 
 PRICE = "date,open,high,low,close\n"
 TR = "date,close\n"
+VOL = "date,volume,turnover,transactions\n"
 
 
 def _write(d, name, text):
@@ -89,6 +90,68 @@ class LoadMarketChecks(unittest.TestCase):
                 "2024-01-02,100,110,90,105\n2024-01-03,105,120,100,110\n",
                 "2024-01-02,200\n",
             )
+
+    def test_load_market_with_volume_aligns_and_ignores_earlier_days(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = _write(d, "p.csv", PRICE + "2024-01-02,100,110,90,105\n2024-01-03,105,120,100,110\n")
+            t = _write(d, "t.csv", TR + "2024-01-02,200\n2024-01-03,220\n")
+            v = _write(
+                d,
+                "v.csv",
+                VOL
+                + "2023-12-29,999,888,777\n"
+                + "2024-01-02,1000,250000,1500\n"
+                + "2024-01-03,1200,310000,1800\n",
+            )
+            m = load_market(p, t, volume=v)
+        self.assertIsNotNone(m.volume)
+        self.assertIsNotNone(m.turnover)
+        self.assertIsNotNone(m.transactions)
+        self.assertEqual(list(m.volume), [1000.0, 1200.0])
+        self.assertEqual(list(m.turnover), [250000.0, 310000.0])
+        self.assertEqual(list(m.transactions), [1500.0, 1800.0])
+        self.assertEqual(m.volume_source.rows, 3)
+        self.assertEqual(m.volume_source.start, "2023-12-29")
+
+    def test_load_market_without_volume_keeps_none(self):
+        m = self._load("2024-01-02,100,110,90,105\n", "2024-01-02,200\n")
+        self.assertIsNone(m.volume)
+        self.assertIsNone(m.turnover)
+        self.assertIsNone(m.transactions)
+        self.assertIsNone(m.volume_source)
+
+    def test_missing_volume_day_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = _write(d, "p.csv", PRICE + "2024-01-02,100,110,90,105\n2024-01-03,105,120,100,110\n")
+            t = _write(d, "t.csv", TR + "2024-01-02,200\n2024-01-03,220\n")
+            v = _write(d, "v.csv", VOL + "2024-01-02,1000,250000,1500\n")
+            with self.assertRaises(DataError) as cm:
+                load_market(p, t, volume=v)
+        self.assertIn("2024-01-03", str(cm.exception))
+
+    def test_extra_later_volume_day_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = _write(d, "p.csv", PRICE + "2024-01-02,100,110,90,105\n")
+            t = _write(d, "t.csv", TR + "2024-01-02,200\n")
+            v = _write(
+                d,
+                "v.csv",
+                VOL + "2024-01-02,1000,250000,1500\n2024-01-03,1200,310000,1800\n",
+            )
+            with self.assertRaises(DataError) as cm:
+                load_market(p, t, volume=v)
+        self.assertIn("2024-01-03", str(cm.exception))
+
+    def test_load_volume_standalone_and_bad_header_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            v = _write(d, "v.csv", VOL + "2024-01-02,1000,250000,1500\n2024-01-03,1200,310000,1800\n")
+            vd = load_volume(v)
+            self.assertEqual(len(vd.dates), 2)
+            self.assertEqual(list(vd.turnover), [250000.0, 310000.0])
+
+            bad = _write(d, "bad.csv", "date,volume\n2024-01-02,1000\n")
+            with self.assertRaises(DataError):
+                load_volume(bad)
 
 
 if __name__ == "__main__":
